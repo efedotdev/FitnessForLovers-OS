@@ -14,14 +14,16 @@ struct AppRootView: View {
     @StateObject private var goalsViewModel = GoalsViewModel()
     @StateObject private var profileViewModel = ProfileViewModel()
 
-    // Use singletons directly
-    private let authManager = AuthManager.shared
+    @StateObject private var authManager = AuthManager.shared
     private let healthKitService = HealthKitService.shared
     private let pairingViewModel = PairingViewModel.shared
 
     var body: some View {
         Group {
-            if authManager.isAuthenticated {
+            if authManager.isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if authManager.isAuthenticated {
                 MainTabView()
                     .environmentObject(authManager)
                     .environmentObject(healthKitService)
@@ -42,11 +44,6 @@ struct AppRootView: View {
     }
 
     private func initializeApp() async {
-        // Request HealthKit authorization (independent from authentication)
-        if !healthKitService.isAuthorized {
-            _ = await healthKitService.requestAuthorization()
-        }
-
         // Load initial data (requires authentication)
         await pairingViewModel.loadPairings()
         await dashboardViewModel.refresh()
@@ -55,17 +52,6 @@ struct AppRootView: View {
 
         // Start auto-refresh
         dashboardViewModel.startAutoRefresh()
-
-        // Enable background delivery for HealthKit
-        let todayTypes: [HealthDataType] = [.steps, .activeEnergy, .exerciseMinutes, .standHours, .heartRate]
-        await healthKitService.enableBackgroundDelivery(for: todayTypes)
-    }
-
-    // Separate function for HealthKit-only initialization (for development/testing)
-    func initializeHealthKitOnly() async {
-        if !healthKitService.isAuthorized {
-            _ = await healthKitService.requestAuthorization()
-        }
     }
 }
 
@@ -81,9 +67,9 @@ struct MainTabView: View {
 
     enum Tab: String, CaseIterable {
         case dashboard = "Dashboard"
-        case goals = "Goals"
         case pairing = "Partner"
-        case profile = "Profile"
+        case goals = "Goals"
+        case profile = "Settings"
 
         var icon: String {
             switch self {
@@ -107,17 +93,17 @@ struct MainTabView: View {
                 }
                 .tag(Tab.dashboard)
 
-            GoalsView()
-                .tabItem {
-                    Label(Tab.goals.rawValue, systemImage: Tab.goals.icon)
-                }
-                .tag(Tab.goals)
-
             PairingView()
                 .tabItem {
                     Label(Tab.pairing.rawValue, systemImage: Tab.pairing.icon)
                 }
                 .tag(Tab.pairing)
+
+            GoalsView()
+                .tabItem {
+                    Label(Tab.goals.rawValue, systemImage: Tab.goals.icon)
+                }
+                .tag(Tab.goals)
                 .badge(pairingViewModel.pendingInvitations.count > 0 ? pairingViewModel.pendingInvitations.count : 0)
 
             ProfileView()
@@ -130,138 +116,128 @@ struct MainTabView: View {
     }
 }
 
-// MARK: - Onboarding View
+// MARK: - Email Authentication
 
 struct OnboardingView: View {
-    @EnvironmentObject var authManager: AuthManager
-    @State private var currentPage = 0
+    @EnvironmentObject private var authManager: AuthManager
+    @State private var isRegistering = false
+    @State private var name = ""
+    @State private var email = ""
+    @State private var password = ""
+    @State private var passwordConfirmation = ""
 
-    let pages = [
-        OnboardingPage(
-            title: "Welcome to FitnessForLovers",
-            subtitle: "Share your health journey with someone special",
-            image: "heart.fill",
-            color: .pink
-        ),
-        OnboardingPage(
-            title: "Connect with Your Partner",
-            subtitle: "Invite your partner to share fitness data and motivate each other",
-            image: "person.2.fill",
-            color: .blue
-        ),
-        OnboardingPage(
-            title: "Set Shared Goals",
-            subtitle: "Create goals together and track progress side by side",
-            image: "target",
-            color: .green
-        ),
-        OnboardingPage(
-            title: "Stay in Sync",
-            subtitle: "Automatic HealthKit sync keeps your data always up to date",
-            image: "arrow.clockwise.heart",
-            color: .orange
-        )
-    ]
-
-    var body: some View {
-        ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                // Page Content
-                TabView(selection: $currentPage) {
-                    ForEach(0..<pages.count, id: \.self) { index in
-                        OnboardingPageView(page: pages[index])
-                            .tag(index)
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
-                .indexViewStyle(.page(backgroundDisplayMode: .always))
-
-                // Continue Button
-                VStack(spacing: 16) {
-                    if currentPage == pages.count - 1 {
-                        SignInWithAppleButton()
-                            .frame(height: 56)
-                            .padding(.horizontal, 32)
-
-                        // Development Login (DEBUG only)
-                        #if DEBUG
-                        DevLoginButton()
-                            .frame(height: 56)
-                            .padding(.horizontal, 32)
-                        #endif
-
-                        // HealthKit Test (DEBUG only) - independent from auth
-                        #if DEBUG
-                        HealthKitTestButton()
-                            .frame(height: 56)
-                            .padding(.horizontal, 32)
-                        #endif
-                    } else {
-                        Button(action: {
-                            withAnimation {
-                                currentPage += 1
-                            }
-                        }) {
-                            Text("Continue")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 56)
-                                .background(pages[currentPage].color.gradient)
-                                .clipShape(RoundedRectangle(cornerRadius: 16))
-                        }
-                        .padding(.horizontal, 32)
-                    }
-
-                    Text("By continuing, you agree to our Terms of Service and Privacy Policy")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
-                .padding(.bottom, 40)
-            }
-        }
+    private var normalizedEmail: String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
-}
 
-struct OnboardingPage {
-    let title: String
-    let subtitle: String
-    let image: String
-    let color: Color
-}
-
-struct OnboardingPageView: View {
-    let page: OnboardingPage
+    private var canSubmit: Bool {
+        guard !normalizedEmail.isEmpty, normalizedEmail.contains("@"), password.count >= 8 else {
+            return false
+        }
+        if isRegistering {
+            return !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && password == passwordConfirmation
+        }
+        return true
+    }
 
     var body: some View {
-        VStack(spacing: 32) {
-            Spacer()
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.pink.gradient)
+                        .padding(.top, 36)
 
-            Image(systemName: page.image)
-                .font(.system(size: 100))
-                .foregroundStyle(page.color.gradient)
-                .symbolEffect(.pulse, options: .repeating)
+                    Text("FitnessForLovers")
+                        .font(.largeTitle.bold())
 
-            VStack(spacing: 12) {
-                Text(page.title)
-                    .font(.largeTitle.bold())
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
+                    Text(isRegistering ? "Create your account" : "Sign in to your account")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
 
-                Text(page.subtitle)
-                    .font(.title3)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
+                    VStack(spacing: 14) {
+                        if isRegistering {
+                            TextField("Name", text: $name)
+                                .textContentType(.name)
+                                .textInputAutocapitalization(.words)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        TextField("Email", text: $email)
+                            .textContentType(.emailAddress)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textFieldStyle(.roundedBorder)
+
+                        SecureField("Password", text: $password)
+                            .textContentType(isRegistering ? .newPassword : .password)
+                            .textFieldStyle(.roundedBorder)
+
+                        if isRegistering {
+                            SecureField("Confirm password", text: $passwordConfirmation)
+                                .textContentType(.newPassword)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+
+                    if let errorMessage = authManager.errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Button {
+                        Task {
+                            if isRegistering {
+                                await authManager.register(
+                                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    email: normalizedEmail,
+                                    password: password
+                                )
+                            } else {
+                                await authManager.login(email: normalizedEmail, password: password)
+                            }
+                        }
+                    } label: {
+                        if authManager.isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 52)
+                        } else {
+                            Text(isRegistering ? "Create account" : "Sign in")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 52)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(authManager.isLoading || !canSubmit)
+
+                    if isRegistering && password != passwordConfirmation && !passwordConfirmation.isEmpty {
+                        Text("Passwords do not match.")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+
+                    Button(isRegistering ? "Already have an account? Sign in" : "Create an account") {
+                        isRegistering.toggle()
+                        authManager.clearError()
+                    }
+                    .disabled(authManager.isLoading)
+
+                    Divider()
+
+                    SignInWithAppleButton()
+                        .frame(height: 52)
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 32)
             }
-
-            Spacer()
-            Spacer()
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 }
@@ -270,148 +246,19 @@ struct SignInWithAppleButton: View {
     @EnvironmentObject var authManager: AuthManager
 
     var body: some View {
-        VStack(spacing: 12) {
-            // Error message display
-            if let errorMessage = authManager.errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+        SignInWithAppleButtonRepresentable { authorization in
+            Task {
+                await authManager.signInWithApple(authorization: authorization)
             }
-
-            SignInWithAppleButtonRepresentable { authorization in
-                Task {
-                    await authManager.signInWithApple(authorization: authorization)
-                }
-            } onError: { error in
-                Task {
-                    // Handle ASAuthorizationError properly
-                    if let authError = error as? ASAuthorizationError {
-                        await authManager.setError(appleAuthErrorDescription(authError))
-                    } else {
-                        await authManager.setError(error.localizedDescription)
-                    }
-                }
+        } onError: { _ in
+            Task {
+                authManager.setError("Apple ile giriş yapılamadı. Lütfen tekrar deneyin.")
             }
-            .signInWithAppleButtonStyle(.whiteOutline)
-            .frame(height: 56)
         }
-        .animation(.easeInOut(duration: 0.2), value: authManager.errorMessage)
-    }
-
-    private func appleAuthErrorDescription(_ error: ASAuthorizationError) -> String {
-        switch error.code {
-        case .canceled:
-            return "Sign in was canceled"
-        case .failed:
-            return "Sign in failed. Please try again."
-        case .invalidResponse:
-            return "Invalid response from Apple. Please try again."
-        case .notHandled:
-            return "Sign in could not be completed. Please try again."
-        case .unknown:
-            return "An unknown error occurred. Please try again."
-        @unknown default:
-            return "Sign in failed with error code \(error.code.rawValue). Please try again."
-        }
+        .signInWithAppleButtonStyle(.whiteOutline)
+        .frame(height: 52)
     }
 }
-
-// MARK: - Development Login Button (DEBUG only)
-#if DEBUG
-struct DevLoginButton: View {
-    @EnvironmentObject var authManager: AuthManager
-
-    var body: some View {
-        VStack(spacing: 12) {
-            // Error message display
-            if let errorMessage = authManager.errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
-            Button(action: {
-                Task {
-                    await authManager.signInDevelopment()
-                }
-            }) {
-                HStack {
-                    if authManager.isLoading {
-                        ProgressView()
-                            .frame(width: 20, height: 20)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "hammer.fill")
-                            .font(.system(size: 18, weight: .medium))
-                        Text("Development Login")
-                            .font(.headline)
-                    }
-                }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 56)
-                .background(Color.orange.gradient)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-            }
-            .disabled(authManager.isLoading)
-        }
-        .animation(.easeInOut(duration: 0.2), value: authManager.errorMessage)
-    }
-}
-#endif
-
-// MARK: - HealthKit Test Button (DEBUG only)
-#if DEBUG
-struct HealthKitTestButton: View {
-    @EnvironmentObject var healthKitService: HealthKitService
-    @EnvironmentObject var authManager: AuthManager
-
-    var body: some View {
-        VStack(spacing: 12) {
-            if let errorMessage = healthKitService.syncError {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
-            Button(action: {
-                Task {
-                    _ = await healthKitService.requestAuthorization()
-                }
-            }) {
-                HStack {
-                    if healthKitService.isSyncing {
-                        ProgressView()
-                            .frame(width: 20, height: 20)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "heart.fill")
-                            .font(.system(size: 18, weight: .medium))
-                        Text(healthKitService.isAuthorized ? "HealthKit ✓ Connected" : "Test HealthKit Access")
-                            .font(.headline)
-                    }
-                }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 56)
-                .background(healthKitService.isAuthorized ? Color.green.gradient : Color.pink.gradient)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-            }
-            .disabled(healthKitService.isSyncing)
-        }
-        .animation(.easeInOut(duration: 0.2), value: healthKitService.syncError)
-    }
-}
-#endif
 
 struct SignInWithAppleButtonRepresentable: UIViewRepresentable {
     let onSuccess: (ASAuthorization) -> Void
@@ -470,16 +317,12 @@ struct SignInWithAppleButtonRepresentable: UIViewRepresentable {
             let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
             var result = ""
             var remainingLength = length
+            var generator = SystemRandomNumberGenerator()
 
             while remainingLength > 0 {
-                let randoms: [UInt8] = (0..<16).map { _ in
-                    var random: UInt8 = 0
-                    SecRandomCopyBytes(kSecRandomDefault, 1, &random)
-                    return random
-                }
-
-                randoms.forEach { random in
-                    if remainingLength == 0 { return }
+                for _ in 0..<16 {
+                    if remainingLength == 0 { break }
+                    let random = UInt8.random(in: .min ... .max, using: &generator)
                     if random < charset.count {
                         result.append(charset[Int(random)])
                         remainingLength -= 1

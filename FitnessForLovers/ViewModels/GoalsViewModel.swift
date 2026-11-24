@@ -1,10 +1,3 @@
-//
-//  GoalsViewModel.swift
-//  FitnessForLovers
-//
-//  Created by Efe Eren Bilgili on 23.11.2026.
-//
-
 import Foundation
 import Combine
 
@@ -13,26 +6,20 @@ class GoalsViewModel: ObservableObject {
     @Published var goals: [GoalResponse] = []
     @Published var activeGoals: [GoalResponse] = []
     @Published var completedGoals: [GoalResponse] = []
-    @Published var isLoading: Bool = false
+    @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var showCreateGoalSheet: Bool = false
-    @Published var selectedPairing: PairingResponse?
-    @Published var selectedGoalType: GoalType = .steps
-    @Published var customGoalType: String = ""
-    @Published var targetValue: Double = 10000
-    @Published var selectedPeriod: GoalPeriod = .daily
-    @Published var startDate: Date = Date()
-    @Published var endDate: Date = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+    @Published var showCreateGoalSheet = false
+    @Published var title = "Shared steps"
+    @Published var targetValue = 10000.0
+    @Published var startDate = Date()
+    @Published var endDate = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+    @Published var progressByGoal: [String: GoalProgress] = [:]
 
     private let apiService = APIService.shared
     private let pairingViewModel = PairingViewModel.shared
     private var cancellables = Set<AnyCancellable>()
 
     init() {
-        setupObservers()
-    }
-
-    private func setupObservers() {
         NotificationCenter.default.publisher(for: .pairingChanged)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -51,42 +38,52 @@ class GoalsViewModel: ObservableObject {
     func loadGoals() async {
         guard pairingViewModel.hasActivePairing,
               let pairingId = pairingViewModel.currentPairing?.id else {
-            self.goals = []
-            self.activeGoals = []
-            self.completedGoals = []
+            goals = []
+            activeGoals = []
+            completedGoals = []
+            progressByGoal = [:]
             return
         }
 
         isLoading = true
         errorMessage = nil
+        defer { isLoading = false }
 
         do {
-            let response = try await apiService.getGoals(query: QueryGoalsRequest(page: nil, limit: nil, pairingId: pairingId, status: nil, type: nil, period: nil))
-            self.goals = response.goals
-            self.activeGoals = response.goals.filter { $0.status == GoalStatus.active }
-            self.completedGoals = response.goals.filter { $0.status == GoalStatus.completed }
-        } catch {
-            self.errorMessage = error.localizedDescription
-        }
+            let response = try await apiService.getGoals(pairingId: pairingId)
+            goals = response.goals
+            categorizeGoals()
 
-        isLoading = false
+            for goal in activeGoals {
+                _ = await refreshGoalProgress(goal)
+            }
+        } catch {
+            errorMessage = "Hedefler yüklenemedi. Lütfen tekrar deneyin."
+        }
     }
 
     func createGoal() async -> Bool {
-        guard let pairing = selectedPairing ?? pairingViewModel.currentPairing else {
-            errorMessage = "No active pairing found"
+        guard let pairing = pairingViewModel.currentPairing else {
+            errorMessage = "Ortak hedef oluşturmak için önce bir partnerle eşleşin."
+            return false
+        }
+        guard targetValue > 0 else {
+            errorMessage = "Hedef adım sayısı sıfırdan büyük olmalıdır."
+            return false
+        }
+        guard endDate >= startDate else {
+            errorMessage = "Bitiş tarihi başlangıç tarihinden önce olamaz."
             return false
         }
 
         isLoading = true
         errorMessage = nil
+        defer { isLoading = false }
 
         let request = CreateGoalRequest(
             pairingId: pairing.id,
-            type: selectedGoalType,
-            customType: selectedGoalType == .custom && !customGoalType.isEmpty ? customGoalType : nil,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
             targetValue: targetValue,
-            period: selectedPeriod,
             startDate: startDate,
             endDate: endDate
         )
@@ -94,28 +91,29 @@ class GoalsViewModel: ObservableObject {
         do {
             let goal = try await apiService.createGoal(request)
             goals.append(goal)
-            if goal.status == .active {
-                activeGoals.append(goal)
-            }
+            categorizeGoals()
             showCreateGoalSheet = false
             resetForm()
             NotificationCenter.default.post(name: .goalsChanged, object: nil)
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Hedef oluşturulamadı. Bilgilerinizi kontrol edip tekrar deneyin."
             return false
         }
     }
 
-    func updateGoal(_ goal: GoalResponse, currentValue: Double? = nil, status: GoalStatus? = nil) async -> Bool {
-        isLoading = true
-        errorMessage = nil
-
+    func updateGoal(
+        _ goal: GoalResponse,
+        title: String?,
+        targetValue: Double?,
+        startDate: Date?,
+        endDate: Date?
+    ) async -> Bool {
         let request = UpdateGoalRequest(
-            targetValue: nil,
-            currentValue: currentValue,
-            status: status,
-            endDate: nil
+            title: title,
+            targetValue: targetValue,
+            startDate: startDate,
+            endDate: endDate
         )
 
         do {
@@ -124,72 +122,59 @@ class GoalsViewModel: ObservableObject {
             NotificationCenter.default.post(name: .goalsChanged, object: nil)
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Hedef güncellenemedi. Lütfen tekrar deneyin."
             return false
         }
     }
 
     func deleteGoal(_ goal: GoalResponse) async -> Bool {
-        isLoading = true
-        errorMessage = nil
-
         do {
             try await apiService.deleteGoal(id: goal.id)
             goals.removeAll { $0.id == goal.id }
-            activeGoals.removeAll { $0.id == goal.id }
-            completedGoals.removeAll { $0.id == goal.id }
+            progressByGoal.removeValue(forKey: goal.id)
+            categorizeGoals()
             NotificationCenter.default.post(name: .goalsChanged, object: nil)
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Hedef silinemedi. Lütfen tekrar deneyin."
             return false
         }
     }
 
-    func refreshGoalProgress(_ goal: GoalResponse) async {
+    func refreshGoalProgress(_ goal: GoalResponse) async -> GoalProgress? {
         do {
             let response = try await apiService.getGoalProgress(id: goal.id)
-            updateGoalInLists(response.goal)
-            if let partnerProgress = response.partnerProgress {
-                // Could store partner progress separately for UI
-            }
+            progressByGoal[goal.id] = response.progress
+            updateGoalInLists(goal.applying(progress: response.progress))
+            return response.progress
         } catch {
-            print("Failed to refresh goal progress: \(error)")
+            errorMessage = "Hedef ilerlemesi alınamadı. Lütfen tekrar deneyin."
+            return nil
         }
     }
 
     private func updateGoalInLists(_ updated: GoalResponse) {
         if let index = goals.firstIndex(where: { $0.id == updated.id }) {
             goals[index] = updated
+        } else {
+            goals.append(updated)
         }
-        if let index = activeGoals.firstIndex(where: { $0.id == updated.id }) {
-            activeGoals[index] = updated
-        }
-        if let index = completedGoals.firstIndex(where: { $0.id == updated.id }) {
-            completedGoals[index] = updated
-        }
+        categorizeGoals()
+    }
 
-        // Re-categorize
-        activeGoals = goals.filter { $0.status == .active }
-        completedGoals = goals.filter { $0.status == .completed }
+    private func categorizeGoals() {
+        activeGoals = goals.filter { !$0.completed }
+        completedGoals = goals.filter(\.completed)
     }
 
     private func resetForm() {
-        selectedGoalType = .steps
-        customGoalType = ""
+        title = "Shared steps"
         targetValue = 10000
-        selectedPeriod = .daily
         startDate = Date()
         endDate = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
     }
 
-    // MARK: - Computed Properties
-
     var canCreateGoal: Bool {
-        return pairingViewModel.hasActivePairing
-    }
-
-    var availableGoalTypes: [GoalType] {
-        return GoalType.allCases
+        pairingViewModel.hasActivePairing
     }
 }

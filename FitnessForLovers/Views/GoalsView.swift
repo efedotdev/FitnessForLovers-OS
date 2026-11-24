@@ -1,100 +1,75 @@
-//
-//  GoalsView.swift
-//  FitnessForLovers
-//
-//  Created by Efe Eren Bilgili on 23.11.2026.
-//
-
 import SwiftUI
 
 struct GoalsView: View {
-    @EnvironmentObject var goalsViewModel: GoalsViewModel
-    @EnvironmentObject var pairingViewModel: PairingViewModel
-
+    @EnvironmentObject private var goalsViewModel: GoalsViewModel
     @State private var showCreateGoal = false
     @State private var selectedGoal: GoalResponse?
-    @State private var showGoalDetail = false
 
     var body: some View {
         NavigationStack {
             List {
-                // Active Goals
                 if !goalsViewModel.activeGoals.isEmpty {
-                    Section {
+                    Section("Active goals") {
                         ForEach(goalsViewModel.activeGoals) { goal in
-                            GoalCard(goal: goal)
-                                .onTapGesture {
-                                    selectedGoal = goal
-                                    showGoalDetail = true
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        Task {
-                                            await goalsViewModel.deleteGoal(goal)
-                                        }
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                        }
-                    } header: {
-                        HStack {
-                            Text("Active Goals")
-                            Spacer()
-                            if goalsViewModel.canCreateGoal {
-                                Button(action: { showCreateGoal = true }) {
-                                    Image(systemName: "plus")
-                                }
+                            Button {
+                                selectedGoal = goal
+                            } label: {
+                                GoalCard(goal: goal)
                             }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
 
-                // Completed Goals
                 if !goalsViewModel.completedGoals.isEmpty {
-                    Section {
+                    Section("Completed goals") {
                         ForEach(goalsViewModel.completedGoals) { goal in
-                            GoalCard(goal: goal, style: .completed)
-                                .onTapGesture {
-                                    selectedGoal = goal
-                                    showGoalDetail = true
-                                }
+                            Button {
+                                selectedGoal = goal
+                            } label: {
+                                GoalCard(goal: goal)
+                            }
+                            .buttonStyle(.plain)
                         }
-                    } header: {
-                        Text("Completed Goals (\(goalsViewModel.completedGoals.count))")
                     }
                 }
 
-                // Empty State
-                if goalsViewModel.activeGoals.isEmpty && goalsViewModel.completedGoals.isEmpty {
+                if goalsViewModel.goals.isEmpty && !goalsViewModel.isLoading {
                     ContentUnavailableView {
-                        Label("No Goals Yet", systemImage: "target")
+                        Label("No shared goals yet", systemImage: "figure.walk")
                     } description: {
-                        if goalsViewModel.canCreateGoal {
-                            Text("Create your first shared fitness goal with your partner")
-                        } else {
-                            Text("Connect with a partner to start creating shared goals")
-                        }
+                        Text(goalsViewModel.canCreateGoal
+                             ? "Create a step goal and track your combined progress."
+                             : "Connect with a partner before creating a shared goal.")
                     } actions: {
                         if goalsViewModel.canCreateGoal {
-                            Button("Create Goal") { showCreateGoal = true }
+                            Button("Create step goal") { showCreateGoal = true }
                                 .buttonStyle(.borderedProminent)
                         }
                     }
                     .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .padding(.vertical, 40)
+                }
+            }
+            .overlay {
+                if goalsViewModel.isLoading && goalsViewModel.goals.isEmpty {
+                    ProgressView("Loading goals…")
                 }
             }
             .navigationTitle("Goals")
             .toolbar {
                 if goalsViewModel.canCreateGoal {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button(action: { showCreateGoal = true }) {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showCreateGoal = true
+                        } label: {
                             Image(systemName: "plus")
                         }
+                        .accessibilityLabel("Create step goal")
                     }
                 }
+            }
+            .refreshable {
+                await goalsViewModel.loadGoals()
             }
             .sheet(isPresented: $showCreateGoal) {
                 CreateGoalSheet()
@@ -102,496 +77,278 @@ struct GoalsView: View {
             .sheet(item: $selectedGoal) { goal in
                 GoalDetailView(goal: goal)
             }
-            .refreshable {
-                await goalsViewModel.loadGoals()
-            }
-            .overlay {
-                if goalsViewModel.isLoading && goalsViewModel.goals.isEmpty {
-                    ProgressView("Loading...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(.ultraThinMaterial)
-                }
-            }
-            .alert("Error", isPresented: .constant(goalsViewModel.errorMessage != nil)) {
+            .alert("Error", isPresented: Binding(
+                get: { goalsViewModel.errorMessage != nil },
+                set: { if !$0 { goalsViewModel.errorMessage = nil } }
+            )) {
                 Button("OK") { goalsViewModel.errorMessage = nil }
             } message: {
                 Text(goalsViewModel.errorMessage ?? "")
             }
+            .task {
+                await goalsViewModel.loadGoals()
+            }
         }
     }
 }
 
-// MARK: - Goal Card
-
-struct GoalCard: View {
+private struct GoalCard: View {
     let goal: GoalResponse
-    var style: Style = .active
-
-    enum Style {
-        case active, completed
-    }
 
     var body: some View {
-        VStack(spacing: 12) {
-            // Header
-            HStack(spacing: 12) {
-                Image(systemName: goal.type.systemImageName)
-                    .font(.title2)
-                    .foregroundStyle(goalColor.gradient)
-                    .frame(width: 44, height: 44)
-                    .background(goalColor.opacity(0.15), in: Circle())
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(goal.type.displayName)
-                        .font(.headline)
-                    if let customType = goal.customType {
-                        Text(customType)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(Int(goal.progressPercentage))%")
-                        .font(.title3.bold())
-                        .foregroundColor(goalColor)
-                    Text(style == .completed ? "Completed" : "\(goal.daysRemaining) days left")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            // Progress Bar
-            ProgressView(value: min(goal.progressPercentage / 100, 1.0))
-                .tint(goalColor)
-                .scaleEffect(y: 3)
-
-            // Stats
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Current")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("\(Int(goal.currentValue))")
-                        .font(.subheadline.bold())
-                }
-
+                Label(goal.title, systemImage: "figure.walk")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
                 Spacer()
-
-                VStack(alignment: .center, spacing: 2) {
-                    Text("Target")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("\(Int(goal.targetValue))")
-                        .font(.subheadline.bold())
-                }
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("Period")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(goal.period.displayName)
-                        .font(.subheadline.bold())
-                }
+                Text("\(Int(min(goal.progressPercentage, 100)))%")
+                    .font(.headline)
+                    .foregroundStyle(goal.completed ? .green : .blue)
             }
 
-                    }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(style == .completed ? Color.green.opacity(0.3) : Color.clear, lineWidth: 2)
-        )
-        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-        .listRowBackground(Color.clear)
-    }
+            ProgressView(value: min(goal.progressPercentage / 100, 1))
+                .tint(goal.completed ? .green : .blue)
 
-    private var goalColor: Color {
-        if style == .completed { return .green }
-        if goal.progressPercentage >= 100 { return .green }
-        if goal.progressPercentage >= 75 { return .blue }
-        if goal.progressPercentage >= 50 { return .orange }
-        return .red
-    }
-}
-
-struct PartnerProgressBar: View {
-    let partnerProgress: PartnerGoalProgress?
-
-    var body: some View {
-        VStack(spacing: 8) {
             HStack {
-                Image(systemName: "person.2.fill")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text("Partner Progress")
-                    .font(.caption.weight(.medium))
-                    .foregroundColor(.secondary)
+                Text("\(Int(goal.currentValue)) / \(Int(goal.targetValue)) steps")
                 Spacer()
+                Text(goal.completed ? "Completed" : "\(Int(goal.remainingValue)) left")
             }
-
-            if let progress = partnerProgress {
-                HStack(spacing: 8) {
-                    // User
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("You")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Text("\(Int(progress.currentValue))")
-                            .font(.caption.bold())
-                    }
-
-                    // Progress comparison
-                    GeometryReader { geometry in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.secondary.opacity(0.2))
-                                .frame(height: 8)
-
-                            // Partner bar
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.blue.opacity(0.3))
-                                .frame(width: geometry.size.width * min(progress.progress / 100, 1), height: 8)
-
-                            // User bar (overlay)
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.green.gradient)
-                                .frame(width: geometry.size.width * min(1.0, 1.0), height: 8)
-                        }
-                    }
-                    .frame(height: 8)
-
-                    // Partner
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(progress.name ?? "Partner")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Text("\(Int(progress.currentValue))")
-                            .font(.caption.bold())
-                    }
-                }
-            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
-        .padding(12)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        .padding(.vertical, 8)
     }
 }
 
-// MARK: - Create Goal Sheet
+private struct CreateGoalSheet: View {
+    @EnvironmentObject private var goalsViewModel: GoalsViewModel
+    @Environment(\.dismiss) private var dismiss
 
-struct CreateGoalSheet: View {
-    @EnvironmentObject var goalsViewModel: GoalsViewModel
-    @EnvironmentObject var pairingViewModel: PairingViewModel
-    @Environment(\.dismiss) var dismiss
-
-    @State private var selectedType: GoalType = .steps
-    @State private var customTypeName = ""
-    @State private var targetValue: Double = 10000
-    @State private var selectedPeriod: GoalPeriod = .daily
+    @State private var title = "Shared steps"
+    @State private var targetValue = 10000.0
     @State private var startDate = Date()
     @State private var endDate = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
-    @State private var isLoading = false
+    @State private var isSaving = false
+
+    private var canSave: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && targetValue > 0
+            && endDate >= startDate
+            && !isSaving
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Goal Type") {
-                    Picker("Type", selection: $selectedType) {
-                        ForEach(GoalType.allCases) { type in
-                            Label(type.displayName, systemImage: type.systemImageName).tag(type)
-                        }
-                    }
-                    .pickerStyle(.navigationLink)
-
-                    if selectedType == .custom {
-                        TextField("Custom Goal Name", text: $customTypeName)
-                    }
-                }
-
-                Section("Target") {
+                Section("Shared step goal") {
+                    TextField("Goal name", text: $title)
                     HStack {
-                        Text("Target Value")
+                        Text("Target steps")
                         Spacer()
-                        TextField("Value", value: $targetValue, format: .number)
-                            .keyboardType(.decimalPad)
+                        TextField("Steps", value: $targetValue, format: .number)
+                            .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
-                            .frame(width: 100)
-                        Text(selectedType.defaultUnit.displayName)
-                            .foregroundColor(.secondary)
+                            .frame(width: 140)
                     }
                 }
 
-                Section("Period") {
-                    Picker("Period", selection: $selectedPeriod) {
-                        ForEach(GoalPeriod.allCases, id: \.self) { period in
-                            Text(period.displayName).tag(period)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                Section("Dates") {
-                    DatePicker("Start Date", selection: $startDate, displayedComponents: .date)
-                    DatePicker("End Date", selection: $endDate, in: startDate..., displayedComponents: .date)
-                }
-
-                if let pairing = goalsViewModel.selectedPairing ?? pairingViewModel.currentPairing {
-                    Section {
-                        HStack {
-                            Image(systemName: "person.2.fill")
-                                .foregroundColor(.blue)
-                            Text("Shared with \(pairing.partnerName)")
-                                .font(.subheadline)
-                        }
-                    }
+                Section("Date range") {
+                    DatePicker("Start date", selection: $startDate, displayedComponents: .date)
+                    DatePicker("End date", selection: $endDate, in: startDate..., displayedComponents: .date)
                 }
             }
-            .navigationTitle("New Goal")
+            .navigationTitle("New goal")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(action: createGoal) {
-                        if isLoading {
-                            ProgressView().frame(width: 20, height: 20)
+                    Button {
+                        save()
+                    } label: {
+                        if isSaving {
+                            ProgressView()
                         } else {
                             Text("Create")
                         }
                     }
-                    .disabled(isLoading || (selectedType == .custom && customTypeName.isEmpty))
+                    .disabled(!canSave)
                 }
             }
         }
         .presentationDetents([.medium, .large])
     }
 
-    private func createGoal() {
-        isLoading = true
-        goalsViewModel.selectedGoalType = selectedType
-        goalsViewModel.customGoalType = customTypeName
+    private func save() {
+        isSaving = true
+        goalsViewModel.title = title
         goalsViewModel.targetValue = targetValue
-        goalsViewModel.selectedPeriod = selectedPeriod
         goalsViewModel.startDate = startDate
         goalsViewModel.endDate = endDate
-
         Task {
-            let success = await goalsViewModel.createGoal()
-            if success {
+            if await goalsViewModel.createGoal() {
                 dismiss()
             }
-            isLoading = false
+            isSaving = false
         }
     }
 }
 
-// MARK: - Goal Detail View
+private struct GoalDetailView: View {
+    @EnvironmentObject private var goalsViewModel: GoalsViewModel
+    @Environment(\.dismiss) private var dismiss
 
-struct GoalDetailView: View {
-    @EnvironmentObject var goalsViewModel: GoalsViewModel
-    @Environment(\.dismiss) var dismiss
-
-    let goal: GoalResponse
+    @State private var goal: GoalResponse
     @State private var showEditSheet = false
     @State private var showDeleteConfirmation = false
-    @State private var updatedCurrentValue: Double
 
     init(goal: GoalResponse) {
-        self.goal = goal
-        _updatedCurrentValue = State(initialValue: goal.currentValue)
+        _goal = State(initialValue: goal)
     }
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    GoalCard(goal: goal)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                }
-
-                Section("Progress") {
-                    if goal.status == .active {
-                        HStack {
-                            Text("Current Value")
-                            Spacer()
-                            TextField("Value", value: $updatedCurrentValue, format: .number)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: 100)
-                        }
-
-                        Button("Update Progress") {
-                            Task {
-                                await goalsViewModel.updateGoal(goal, currentValue: updatedCurrentValue)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity)
-                    }
-
-                    ProgressView(value: min(goal.progressPercentage / 100, 1.0))
-                        .tint(progressColor)
-                        .scaleEffect(y: 4)
-
+                Section("Combined progress") {
+                    ProgressView(value: min(goal.progressPercentage / 100, 1))
+                        .tint(goal.completed ? .green : .blue)
                     HStack {
-                        VStack(alignment: .leading) {
-                            Text("Current").font(.caption).foregroundColor(.secondary)
-                            Text("\(Int(goal.currentValue))").font(.headline)
-                        }
+                        metric("Steps", value: Int(goal.currentValue).formatted())
                         Spacer()
-                        VStack {
-                            Text("Target").font(.caption).foregroundColor(.secondary)
-                            Text("\(Int(goal.targetValue))").font(.headline)
-                        }
+                        metric("Target", value: Int(goal.targetValue).formatted())
                         Spacer()
-                        VStack(alignment: .trailing) {
-                            Text("Progress").font(.caption).foregroundColor(.secondary)
-                            Text("\(Int(goal.progressPercentage))%").font(.headline).foregroundColor(progressColor)
-                        }
+                        metric("Remaining", value: Int(goal.remainingValue).formatted())
                     }
+                    Text("Progress is calculated from both partners’ step data.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
-                Section("Details") {
-                    InfoRow(label: "Type", value: goal.type.displayName)
-                    if let customType = goal.customType {
-                        InfoRow(label: "Custom Name", value: customType)
-                    }
-                    InfoRow(label: "Period", value: goal.period.displayName)
-                    InfoRow(label: "Status", value: goal.status.displayName, valueColor: statusColor)
-                    InfoRow(label: "Created By", value: goal.createdBy?.name ?? "You")
-                    InfoRow(label: "Created", value: goal.createdAt.formatted(date: .abbreviated, time: .omitted))
+                Section("Goal details") {
+                    LabeledContent("Name", value: goal.title)
+                    LabeledContent("Start", value: goal.startDate.formatted(date: .abbreviated, time: .omitted))
+                    LabeledContent("End", value: goal.endDate.formatted(date: .abbreviated, time: .omitted))
+                    LabeledContent("Status", value: goal.completed ? "Completed" : "Active")
                 }
 
-                if goal.status == .active {
-                    Section {
-                        Button(role: .destructive) {
-                            showDeleteConfirmation = true
-                        } label: {
-                            HStack {
-                                Spacer()
-                                Label("Delete Goal", systemImage: "trash")
-                                Spacer()
-                            }
-                        }
+                Section {
+                    Button("Delete goal", role: .destructive) {
+                        showDeleteConfirmation = true
                     }
                 }
             }
-            .navigationTitle("Goal Details")
+            .navigationTitle("Goal details")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                if goal.status == .active {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Edit") { showEditSheet = true }
-                    }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Edit") { showEditSheet = true }
+                        .disabled(goal.completed)
                 }
             }
             .sheet(isPresented: $showEditSheet) {
                 EditGoalSheet(goal: goal)
             }
-            .alert("Delete Goal", isPresented: $showDeleteConfirmation) {
-                Button("Cancel", role: .cancel) { }
+            .task {
+                if let progress = await goalsViewModel.refreshGoalProgress(goal) {
+                    goal = goal.applying(progress: progress)
+                }
+            }
+            .alert("Delete goal?", isPresented: $showDeleteConfirmation) {
+                Button("Cancel", role: .cancel) {}
                 Button("Delete", role: .destructive) {
                     Task {
-                        await goalsViewModel.deleteGoal(goal)
-                        dismiss()
+                        if await goalsViewModel.deleteGoal(goal) {
+                            dismiss()
+                        }
                     }
                 }
             } message: {
-                Text("This will permanently delete this goal.")
+                Text("This shared goal will be permanently deleted.")
             }
         }
     }
 
-    private var progressColor: Color {
-        if goal.progressPercentage >= 100 { return .green }
-        if goal.progressPercentage >= 75 { return .blue }
-        if goal.progressPercentage >= 50 { return .orange }
-        return .red
-    }
-
-    private var statusColor: Color {
-        switch goal.status {
-        case .active: return .green
-        case .completed: return .blue
-        case .archived: return .gray
-        case .expired: return .red
+    private func metric(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline)
         }
     }
 }
 
-struct EditGoalSheet: View {
-    @EnvironmentObject var goalsViewModel: GoalsViewModel
-    @Environment(\.dismiss) var dismiss
+private struct EditGoalSheet: View {
+    @EnvironmentObject private var goalsViewModel: GoalsViewModel
+    @Environment(\.dismiss) private var dismiss
 
     let goal: GoalResponse
+    @State private var title: String
     @State private var targetValue: Double
+    @State private var startDate: Date
     @State private var endDate: Date
-    @State private var isLoading = false
+    @State private var isSaving = false
 
     init(goal: GoalResponse) {
         self.goal = goal
+        _title = State(initialValue: goal.title)
         _targetValue = State(initialValue: goal.targetValue)
+        _startDate = State(initialValue: goal.startDate)
         _endDate = State(initialValue: goal.endDate)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Target") {
+                Section("Shared step goal") {
+                    TextField("Goal name", text: $title)
                     HStack {
-                        Text("Target Value")
+                        Text("Target steps")
                         Spacer()
-                        TextField("Value", value: $targetValue, format: .number)
-                            .keyboardType(.decimalPad)
+                        TextField("Steps", value: $targetValue, format: .number)
+                            .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
-                            .frame(width: 100)
-                        Text(goal.type.defaultUnit.displayName)
-                            .foregroundColor(.secondary)
+                            .frame(width: 140)
                     }
                 }
-
-                Section("End Date") {
-                    DatePicker("End Date", selection: $endDate, in: goal.startDate..., displayedComponents: .date)
+                Section("Date range") {
+                    DatePicker("Start date", selection: $startDate, displayedComponents: .date)
+                    DatePicker("End date", selection: $endDate, in: startDate..., displayedComponents: .date)
                 }
             }
-            .navigationTitle("Edit Goal")
+            .navigationTitle("Edit goal")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(action: saveChanges) {
-                        if isLoading {
-                            ProgressView().frame(width: 20, height: 20)
-                        } else {
-                            Text("Save")
+                    Button("Save") {
+                        isSaving = true
+                        Task {
+                            if await goalsViewModel.updateGoal(
+                                goal,
+                                title: title,
+                                targetValue: targetValue,
+                                startDate: startDate,
+                                endDate: endDate
+                            ) {
+                                dismiss()
+                            }
+                            isSaving = false
                         }
                     }
-                    .disabled(isLoading)
+                    .disabled(isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || targetValue <= 0)
                 }
             }
         }
-    }
-
-    private func saveChanges() {
-        isLoading = true
-        Task {
-            let request = UpdateGoalRequest(targetValue: targetValue, currentValue: nil, status: nil, endDate: endDate)
-            let success = await goalsViewModel.updateGoal(goal, currentValue: nil, status: nil)
-            if success {
-                dismiss()
-            }
-            isLoading = false
-        }
+        .presentationDetents([.medium, .large])
     }
 }

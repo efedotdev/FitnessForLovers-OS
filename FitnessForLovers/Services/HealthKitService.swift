@@ -15,8 +15,9 @@ class HealthKitService: ObservableObject {
 
     private let healthStore = HKHealthStore()
     private let apiService = APIService.shared
+    private let authorizationRequestedKey = "healthKitAuthorizationRequested"
 
-    @Published var isAuthorized: Bool = false
+    @Published var hasRequestedAuthorization: Bool = false
     @Published var authorizationStatus: HKAuthorizationStatus = .notDetermined
     @Published var isSyncing: Bool = false
     @Published var lastSyncDate: Date?
@@ -31,41 +32,9 @@ class HealthKitService: ObservableObject {
     var requiredReadTypes: Set<HKObjectType> {
         var types: Set<HKObjectType> = []
 
-        // Activity
         if let steps = HKQuantityType.quantityType(forIdentifier: .stepCount) { types.insert(steps) }
         if let activeEnergy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) { types.insert(activeEnergy) }
-        if let basalEnergy = HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned) { types.insert(basalEnergy) }
         if let distance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) { types.insert(distance) }
-        if let flights = HKQuantityType.quantityType(forIdentifier: .flightsClimbed) { types.insert(flights) }
-        if let exerciseMinutes = HKQuantityType.quantityType(forIdentifier: .appleExerciseTime) { types.insert(exerciseMinutes) }
-        if let standHours = HKQuantityType.quantityType(forIdentifier: .appleStandTime) { types.insert(standHours) }
-
-        // Heart
-        if let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate) { types.insert(heartRate) }
-        if let restingHR = HKQuantityType.quantityType(forIdentifier: .restingHeartRate) { types.insert(restingHR) }
-        if let hrv = HKQuantityType.quantityType(forIdentifier: .heartRateVariabilitySDNN) { types.insert(hrv) }
-        if let vo2Max = HKQuantityType.quantityType(forIdentifier: .vo2Max) { types.insert(vo2Max) }
-
-        // Sleep
-        if let sleep = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) { types.insert(sleep) }
-
-        // Workouts
-        types.insert(HKWorkoutType.workoutType())
-
-        // Body
-        if let weight = HKQuantityType.quantityType(forIdentifier: .bodyMass) { types.insert(weight) }
-        if let bodyFat = HKQuantityType.quantityType(forIdentifier: .bodyFatPercentage) { types.insert(bodyFat) }
-
-        // Vitals
-        if let bpSystolic = HKQuantityType.quantityType(forIdentifier: .bloodPressureSystolic) { types.insert(bpSystolic) }
-        if let bpDiastolic = HKQuantityType.quantityType(forIdentifier: .bloodPressureDiastolic) { types.insert(bpDiastolic) }
-        if let bloodGlucose = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) { types.insert(bloodGlucose) }
-        if let oxygen = HKQuantityType.quantityType(forIdentifier: .oxygenSaturation) { types.insert(oxygen) }
-        if let respiratory = HKQuantityType.quantityType(forIdentifier: .respiratoryRate) { types.insert(respiratory) }
-        if let bodyTemp = HKQuantityType.quantityType(forIdentifier: .bodyTemperature) { types.insert(bodyTemp) }
-
-        // Reproductive
-        if let menstrual = HKCategoryType.categoryType(forIdentifier: .menstrualFlow) { types.insert(menstrual) }
 
         return types
     }
@@ -77,35 +46,23 @@ class HealthKitService: ObservableObject {
 
     func requestAuthorization() async -> Bool {
         guard HKHealthStore.isHealthDataAvailable() else {
-            await setError("HealthKit is not available on this device")
+            setError("Apple Health bu cihazda kullanılamıyor.")
             return false
         }
 
         do {
             try await healthStore.requestAuthorization(toShare: requiredWriteTypes, read: requiredReadTypes)
-            await checkAuthorizationStatus()
-            return isAuthorized
+            setAuthorizationRequested()
+            return true
         } catch {
-            await setError("Authorization failed: \(error.localizedDescription)")
+            setError("Apple Health izni alınamadı. Ayarlarınızı kontrol edip tekrar deneyin.")
             return false
         }
     }
 
     func checkAuthorizationStatus() {
-        var allAuthorized = true
-
-        for type in requiredReadTypes {
-            let status = healthStore.authorizationStatus(for: type)
-            if status != .sharingAuthorized {
-                allAuthorized = false
-                break
-            }
-        }
-
-        Task { @MainActor in
-            self.isAuthorized = allAuthorized
-            self.authorizationStatus = allAuthorized ? .sharingAuthorized : .notDetermined
-        }
+        hasRequestedAuthorization = UserDefaults.standard.bool(forKey: authorizationRequestedKey)
+        authorizationStatus = .notDetermined
     }
 
     // MARK: - Data Fetching
@@ -301,10 +258,10 @@ class HealthKitService: ObservableObject {
         case HKQuantityTypeIdentifier.appleStandTime.rawValue: return .hours
         case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue: return .kcal
         case HKQuantityTypeIdentifier.basalEnergyBurned.rawValue: return .kcal
-        case HKQuantityTypeIdentifier.distanceWalkingRunning.rawValue: return .km
+        case HKQuantityTypeIdentifier.distanceWalkingRunning.rawValue: return .meters
         case HKQuantityTypeIdentifier.heartRate.rawValue: return .bpm
         case HKQuantityTypeIdentifier.restingHeartRate.rawValue: return .bpm
-        case HKQuantityTypeIdentifier.heartRateVariabilitySDNN.rawValue: return .milliseconds
+        case HKQuantityTypeIdentifier.heartRateVariabilitySDNN.rawValue: return nil
         case HKQuantityTypeIdentifier.vo2Max.rawValue: return .mlMin
         case HKQuantityTypeIdentifier.bodyMass.rawValue: return .kg
         case HKQuantityTypeIdentifier.bodyFatPercentage.rawValue: return .percentage
@@ -334,65 +291,49 @@ class HealthKitService: ObservableObject {
         case .mlMin: return HKUnit.literUnit(with: .milli).unitDivided(by: .minute())
         case .celsius: return .degreeCelsius()
         case .seconds: return .second()
-        case .milliseconds: return HKUnit.secondUnit(with: .milli)
-        case .custom: return .count()
         }
     }
 
     // MARK: - Sync
 
     func syncHealthData(types: [HealthDataType], daysBack: Int = 7) async {
-        guard isAuthorized else {
-            await setError("HealthKit not authorized")
+        guard await apiService.isAuthenticated else {
+            setError("Giriş yapmadan sağlık verileri senkronize edilemez.")
             return
         }
 
-        await setSyncing(true)
-        defer { Task { await setSyncing(false) } }
+        guard hasRequestedAuthorization else {
+            setError("Apple Health izni verilmedi.")
+            return
+        }
+
+        isSyncing = true
+        syncError = nil
+        defer { isSyncing = false }
 
         let endDate = Date()
-        let startDate = Calendar.current.date(byAdding: .day, value: -daysBack, to: endDate) ?? endDate
+        let todayStart = Calendar.current.startOfDay(for: endDate)
+        let startDate = Calendar.current.date(byAdding: .day, value: -daysBack, to: todayStart) ?? todayStart
 
         do {
             let requests = try await fetchHealthData(for: types, startDate: startDate, endDate: endDate)
 
             if !requests.isEmpty {
-                let bulkRequest = BulkHealthDataRequest(data: requests)
-                let response = try await apiService.bulkSyncHealthData(bulkRequest)
-                await setLastSyncDate(Date())
-                print("Synced \(response.synced) health data records")
+                for startIndex in stride(from: 0, to: requests.count, by: 1000) {
+                    let endIndex = min(startIndex + 1000, requests.count)
+                    let batch = Array(requests[startIndex..<endIndex])
+                    _ = try await apiService.bulkSyncHealthData(BulkHealthDataRequest(data: batch))
+                }
+                lastSyncDate = Date()
             }
         } catch {
-            await setError("Sync failed: \(error.localizedDescription)")
+            setError("Sağlık verileri senkronize edilemedi. Bağlantınızı kontrol edip tekrar deneyin.")
         }
     }
 
     func syncTodayData() async {
-        let todayTypes: [HealthDataType] = [
-            .steps, .activeEnergy, .exerciseMinutes, .standHours,
-            .heartRate, .distanceWalkingRunning, .flightsClimbed
-        ]
-        await syncHealthData(types: todayTypes, daysBack: 1)
-    }
-
-    // MARK: - Background Delivery
-
-    func enableBackgroundDelivery(for types: [HealthDataType]) async {
-        for type in types {
-            guard let hkType = hkQuantityType(for: type) ?? hkCategoryType(for: type) else { continue }
-
-            do {
-                try await healthStore.enableBackgroundDelivery(for: hkType, frequency: .immediate)
-            } catch {
-                print("Failed to enable background delivery for \(type): \(error)")
-            }
-        }
-    }
-
-    func disableBackgroundDelivery() async {
-        for type in requiredReadTypes {
-            try? await healthStore.disableBackgroundDelivery(for: type)
-        }
+        let todayTypes: [HealthDataType] = [.steps, .activeEnergy, .distanceWalkingRunning]
+        await syncHealthData(types: todayTypes, daysBack: 0)
     }
 
     // MARK: - Helpers
@@ -430,18 +371,13 @@ class HealthKitService: ObservableObject {
         }
     }
 
-    @MainActor
-    private func setSyncing(_ syncing: Bool) {
-        isSyncing = syncing
-    }
-
-    @MainActor
     private func setError(_ message: String) {
         syncError = message
     }
 
-    @MainActor
-    private func setLastSyncDate(_ date: Date) {
-        lastSyncDate = date
+    private func setAuthorizationRequested() {
+        hasRequestedAuthorization = true
+        UserDefaults.standard.set(true, forKey: authorizationRequestedKey)
+        authorizationStatus = .notDetermined
     }
 }
