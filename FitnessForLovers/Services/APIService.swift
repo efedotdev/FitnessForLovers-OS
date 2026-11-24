@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import Combine
 
 // MARK: - API Configuration
 
@@ -24,6 +23,7 @@ enum APIServiceError: LocalizedError, Equatable, Sendable {
     case unauthorized
     case forbidden
     case notFound
+    case conflict
     case serverError(String)
     case decodingError(String)
     case encodingError(String)
@@ -37,6 +37,7 @@ enum APIServiceError: LocalizedError, Equatable, Sendable {
         case .unauthorized: return "Session expired. Please sign in again."
         case .forbidden: return "Access denied"
         case .notFound: return "Resource not found"
+        case .conflict: return "This request conflicts with an existing resource"
         case .serverError(let message): return "Server error: \(message)"
         case .decodingError(let message): return "Data parsing error: \(message)"
         case .encodingError(let message): return "Data encoding error: \(message)"
@@ -51,7 +52,8 @@ enum APIServiceError: LocalizedError, Equatable, Sendable {
              (.requestTimeout, .requestTimeout),
              (.unauthorized, .unauthorized),
              (.forbidden, .forbidden),
-             (.notFound, .notFound):
+             (.notFound, .notFound),
+             (.conflict, .conflict):
             return true
         case (.serverError(let lhsMsg), .serverError(let rhsMsg)):
             return lhsMsg == rhsMsg
@@ -67,57 +69,9 @@ enum APIServiceError: LocalizedError, Equatable, Sendable {
     }
 }
 
-// MARK: - HTTP Method
-
-enum HTTPMethod: String, Sendable {
-    case get = "GET"
-    case post = "POST"
-    case put = "PUT"
-    case patch = "PATCH"
-    case delete = "DELETE"
-}
-
-// MARK: - API Service Protocol
-
-protocol APIServiceProtocol {
-    func request<T: Codable>(
-        _ endpoint: Endpoint,
-        responseType: T.Type
-    ) async throws -> T
-
-    func requestVoid(_ endpoint: Endpoint) async throws
-}
-
-// MARK: - Endpoint
-
-struct Endpoint: Sendable {
-    let path: String
-    let method: HTTPMethod
-    let queryItems: [URLQueryItem]?
-    let body: (any Encodable)?
-    let requiresAuth: Bool
-    let customHeaders: [String: String]?
-
-    init(
-        path: String,
-        method: HTTPMethod = .get,
-        queryItems: [URLQueryItem]? = nil,
-        body: (any Encodable)? = nil,
-        requiresAuth: Bool = true,
-        customHeaders: [String: String]? = nil
-    ) {
-        self.path = path
-        self.method = method
-        self.queryItems = queryItems
-        self.body = body
-        self.requiresAuth = requiresAuth
-        self.customHeaders = customHeaders
-    }
-}
-
 // MARK: - API Service Implementation
 
-actor APIService: APIServiceProtocol {
+actor APIService {
     static let shared = APIService()
 
     private let session: URLSession
@@ -133,27 +87,42 @@ actor APIService: APIServiceProtocol {
         configuration.waitsForConnectivity = true
         self.session = URLSession(configuration: configuration)
 
-        self.jsonDecoder = JSONDecoder()
-        self.jsonDecoder.dateDecodingStrategy = .iso8601
+        self.jsonDecoder = .backendAPIDecoder()
 
         self.jsonEncoder = JSONEncoder()
         self.jsonEncoder.dateEncodingStrategy = .iso8601
 
-        loadTokensFromKeychain()
+        do {
+            if let accessData = try KeychainHelper.load(key: "accessToken"),
+               let refreshData = try KeychainHelper.load(key: "refreshToken"),
+               let access = String(data: accessData, encoding: .utf8),
+               let refresh = String(data: refreshData, encoding: .utf8) {
+                self.accessToken = access
+                self.refreshToken = refresh
+            }
+        } catch {
+            print("[APIService] Unable to restore session from Keychain")
+        }
     }
 
     // MARK: - Token Management
 
-    func setTokens(accessToken: String, refreshToken: String) {
+    func setTokens(accessToken: String, refreshToken: String) throws {
+        do {
+            try KeychainHelper.save(key: "accessToken", data: Data(accessToken.utf8))
+            try KeychainHelper.save(key: "refreshToken", data: Data(refreshToken.utf8))
+        } catch {
+            try? clearTokensFromKeychain()
+            throw APIServiceError.unknown(error)
+        }
         self.accessToken = accessToken
         self.refreshToken = refreshToken
-        saveTokensToKeychain()
     }
 
-    func clearTokens() {
+    func clearTokens() throws {
         self.accessToken = nil
         self.refreshToken = nil
-        clearTokensFromKeychain()
+        try clearTokensFromKeychain()
     }
 
     var currentAccessToken: String? {
@@ -164,26 +133,9 @@ actor APIService: APIServiceProtocol {
         return accessToken != nil
     }
 
-    private func loadTokensFromKeychain() {
-        if let accessData = KeychainHelper.load(key: "accessToken"),
-           let refreshData = KeychainHelper.load(key: "refreshToken"),
-           let access = String(data: accessData, encoding: .utf8),
-           let refresh = String(data: refreshData, encoding: .utf8) {
-            self.accessToken = access
-            self.refreshToken = refresh
-        }
-    }
-
-    private func saveTokensToKeychain() {
-        if let access = accessToken, let refresh = refreshToken {
-            KeychainHelper.save(key: "accessToken", data: Data(access.utf8))
-            KeychainHelper.save(key: "refreshToken", data: Data(refresh.utf8))
-        }
-    }
-
-    private func clearTokensFromKeychain() {
-        KeychainHelper.delete(key: "accessToken")
-        KeychainHelper.delete(key: "refreshToken")
+    private func clearTokensFromKeychain() throws {
+        try KeychainHelper.delete(key: "accessToken")
+        try KeychainHelper.delete(key: "refreshToken")
     }
 
     // MARK: - Request Methods
@@ -232,20 +184,6 @@ actor APIService: APIServiceProtocol {
             }
         }
 
-        // DEBUG: Log request details for development login
-        #if DEBUG
-        if endpoint.path.contains("dev-login") {
-            print("[APIService] 🔧 Dev Login Request:")
-            print("  URL: \(url.absoluteString)")
-            print("  Method: \(endpoint.method.rawValue)")
-            print("  RequiresAuth: \(endpoint.requiresAuth)")
-            if let body = request.httpBody,
-               let bodyString = String(data: body, encoding: .utf8) {
-                print("  Body: \(bodyString)")
-            }
-        }
-        #endif
-
         do {
             let (data, response) = try await session.data(for: request)
 
@@ -253,40 +191,41 @@ actor APIService: APIServiceProtocol {
                 throw APIServiceError.unknown(URLError(.badServerResponse))
             }
 
-            // DEBUG: Log response details for development login
-            #if DEBUG
-            if endpoint.path.contains("dev-login") {
-                print("[APIService] 🔧 Dev Login Response:")
-                print("  Status Code: \(httpResponse.statusCode)")
-                if let responseString = String(data: data, encoding: .utf8) {
-                    // Safe logging - don't log tokens
-                    let sanitized = responseString
-                        .replacingOccurrences(of: "\"accessToken\":\"[^\"]*\"", with: "\"accessToken\":\"***\"", options: .regularExpression)
-                        .replacingOccurrences(of: "\"refreshToken\":\"[^\"]*\"", with: "\"refreshToken\":\"***\"", options: .regularExpression)
-                    print("  Body: \(sanitized)")
+            if httpResponse.statusCode == 401 && endpoint.requiresAuth {
+                guard refreshToken != nil else {
+                    expireSession()
+                    throw APIServiceError.unauthorized
                 }
-            }
-            #endif
 
-            // Handle 401 - try to refresh token
-            if httpResponse.statusCode == 401 && endpoint.requiresAuth && refreshToken != nil {
-                try await refreshAccessToken()
+                do {
+                    try await refreshAccessToken()
+                } catch let refreshError as APIServiceError {
+                    if refreshError == .unauthorized {
+                        expireSession()
+                    }
+                    throw refreshError
+                }
+
                 // Retry request with new token
-                request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                guard let accessToken else {
+                    expireSession()
+                    throw APIServiceError.unauthorized
+                }
+                request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
                 let (retryData, retryResponse) = try await session.data(for: request)
                 guard let retryHttpResponse = retryResponse as? HTTPURLResponse else {
                     throw APIServiceError.unknown(URLError(.badServerResponse))
+                }
+
+                if retryHttpResponse.statusCode == 401 {
+                    expireSession()
+                    throw APIServiceError.unauthorized
                 }
                 return (retryData, retryHttpResponse)
             }
 
             return (data, httpResponse)
         } catch let error as URLError {
-            #if DEBUG
-            if endpoint.path.contains("dev-login") {
-                print("[APIService] 🔧 Dev Login Error: \(error.localizedDescription)")
-            }
-            #endif
             switch error.code {
             case .notConnectedToInternet, .networkConnectionLost:
                 throw APIServiceError.noInternetConnection
@@ -303,10 +242,18 @@ actor APIService: APIServiceProtocol {
     }
 
     private func buildURL(for endpoint: Endpoint) -> URL? {
-        var components = URLComponents(string: APIConfig.baseURL)
-        components?.path = endpoint.path
-        components?.queryItems = endpoint.queryItems
-        return components?.url
+        endpoint.url(baseURL: APIConfig.baseURL)
+    }
+
+    private func expireSession() {
+        accessToken = nil
+        refreshToken = nil
+        do {
+            try clearTokensFromKeychain()
+        } catch {
+            print("[APIService] Unable to clear expired session from Keychain")
+        }
+        NotificationCenter.default.post(name: .sessionExpired, object: nil)
     }
 
     private func handleResponse<T: Codable>(
@@ -321,8 +268,8 @@ actor APIService: APIServiceProtocol {
                 if let apiResponse = try? jsonDecoder.decode(APIResponse<T>.self, from: data) {
                     if apiResponse.success, let data = apiResponse.data {
                         return data
-                    } else if let error = apiResponse.error {
-                        throw APIServiceError.serverError(error.message)
+                    } else if let error = apiResponse.error?.message {
+                        throw APIServiceError.serverError(error)
                     } else {
                         throw APIServiceError.serverError("Unknown API error")
                     }
@@ -340,10 +287,12 @@ actor APIService: APIServiceProtocol {
             throw APIServiceError.forbidden
         case 404:
             throw APIServiceError.notFound
+        case 409:
+            throw APIServiceError.conflict
         case 500...599:
             if let apiError = try? jsonDecoder.decode(APIResponse<T>.self, from: data),
                let error = apiError.error {
-                throw APIServiceError.serverError(error.message)
+                throw APIServiceError.serverError(error.message ?? "Server error: \(response.statusCode)")
             }
             throw APIServiceError.serverError("Server error: \(response.statusCode)")
         default:
@@ -361,6 +310,8 @@ actor APIService: APIServiceProtocol {
             throw APIServiceError.forbidden
         case 404:
             throw APIServiceError.notFound
+        case 409:
+            throw APIServiceError.conflict
         case 500...599:
             throw APIServiceError.serverError("Server error: \(response.statusCode)")
         default:
@@ -387,17 +338,37 @@ actor APIService: APIServiceProtocol {
         request.httpBody = try jsonEncoder.encode(RefreshTokenRequest(refreshToken: refreshToken))
 
         let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            clearTokens()
-            throw APIServiceError.unauthorized
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIServiceError.unknown(URLError(.badServerResponse))
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            switch httpResponse.statusCode {
+            case 401, 403:
+                throw APIServiceError.unauthorized
+            case 500...599:
+                throw APIServiceError.serverError("Server error: \(httpResponse.statusCode)")
+            default:
+                throw APIServiceError.serverError("Unexpected status code: \(httpResponse.statusCode)")
+            }
         }
 
-        let tokenResponse = try jsonDecoder.decode(RefreshResponse.self, from: data)
-        self.accessToken = tokenResponse.accessToken
-        self.refreshToken = tokenResponse.refreshToken
-        saveTokensToKeychain()
+        let tokenResponse = try decodeSuccess(RefreshResponse.self, from: data)
+        try setTokens(accessToken: tokenResponse.accessToken, refreshToken: tokenResponse.refreshToken)
+    }
+
+    private func decodeSuccess<T: Codable>(_ type: T.Type, from data: Data) throws -> T {
+        if let response = try? jsonDecoder.decode(APIResponse<T>.self, from: data) {
+            guard response.success, let payload = response.data else {
+                throw APIServiceError.serverError(response.error?.message ?? "Unknown API error")
+            }
+            return payload
+        }
+
+        do {
+            return try jsonDecoder.decode(T.self, from: data)
+        } catch {
+            throw APIServiceError.decodingError(error.localizedDescription)
+        }
     }
 }
 
@@ -405,6 +376,26 @@ actor APIService: APIServiceProtocol {
 
 extension APIService {
     // Auth
+    func register(_ registerRequest: RegisterRequest) async throws -> AuthResponse {
+        let endpoint = Endpoint(
+            path: "/auth/register",
+            method: .post,
+            body: registerRequest,
+            requiresAuth: false
+        )
+        return try await request(endpoint, responseType: AuthResponse.self)
+    }
+
+    func login(_ loginRequest: LoginRequest) async throws -> AuthResponse {
+        let endpoint = Endpoint(
+            path: "/auth/login",
+            method: .post,
+            body: loginRequest,
+            requiresAuth: false
+        )
+        return try await request(endpoint, responseType: AuthResponse.self)
+    }
+
     func appleSignIn(_ signInRequest: AppleSignInRequest) async throws -> AuthResponse {
         let endpoint = Endpoint(
             path: "/auth/apple",
@@ -414,19 +405,6 @@ extension APIService {
         )
         return try await request(endpoint, responseType: AuthResponse.self)
     }
-
-    // Development Login (DEBUG only)
-    #if DEBUG
-    func devLogin(testEmail: String = "dev@fitnessforlovers.test", name: String = "Development User") async throws -> AuthResponse {
-        let endpoint = Endpoint(
-            path: "/auth/dev-login",
-            method: .post,
-            body: DevLoginRequest(testEmail: testEmail, name: name),
-            requiresAuth: false
-        )
-        return try await request(endpoint, responseType: AuthResponse.self)
-    }
-    #endif
 
     func verifyAppleToken(_ verifyRequest: VerifyAppleRequest) async throws -> VerifyAppleResponse {
         let endpoint = Endpoint(
@@ -449,9 +427,9 @@ extension APIService {
         return try await request(endpoint, responseType: RefreshResponse.self)
     }
 
-    func logout() async throws -> LogoutResponse {
+    func logout() async throws {
         let endpoint = Endpoint(path: "/auth/logout", method: .post)
-        return try await request(endpoint, responseType: LogoutResponse.self)
+        let _: LogoutResponse = try await request(endpoint, responseType: LogoutResponse.self)
     }
 
     func getCurrentUser() async throws -> MeResponse {
@@ -467,6 +445,16 @@ extension APIService {
 
     func getPairings() async throws -> ListPairingsResponse {
         let endpoint = Endpoint(path: "/pairings")
+        return try await request(endpoint, responseType: ListPairingsResponse.self)
+    }
+
+    func getPendingPairings() async throws -> ListPairingsResponse {
+        let endpoint = Endpoint(path: "/pairings/pending")
+        return try await request(endpoint, responseType: ListPairingsResponse.self)
+    }
+
+    func getSentPairings() async throws -> ListPairingsResponse {
+        let endpoint = Endpoint(path: "/pairings/sent")
         return try await request(endpoint, responseType: ListPairingsResponse.self)
     }
 
@@ -516,9 +504,9 @@ extension APIService {
         return try await request(endpoint, responseType: SummaryResponse.self)
     }
 
-    func getPartnerHealthData(query: PartnerHealthDataQuery) async throws -> HealthDataListResponse {
+    func getPartnerHealthData(partnerId: String, query: PartnerHealthDataQuery) async throws -> HealthDataListResponse {
         let queryItems = buildQueryItems(from: query)
-        let endpoint = Endpoint(path: "/health-data/partner/\(query.partnerId)", queryItems: queryItems)
+        let endpoint = Endpoint(path: "/health-data/partner/\(partnerId)", queryItems: queryItems)
         return try await request(endpoint, responseType: HealthDataListResponse.self)
     }
 
@@ -538,9 +526,8 @@ extension APIService {
         return response.goal
     }
 
-    func getGoals(query: QueryGoalsRequest) async throws -> GoalListResponse {
-        let queryItems = buildQueryItems(from: query)
-        let endpoint = Endpoint(path: "/goals", queryItems: queryItems)
+    func getGoals(pairingId: String) async throws -> GoalListResponse {
+        let endpoint = Endpoint(path: "/goals/pairing/\(pairingId)")
         return try await request(endpoint, responseType: GoalListResponse.self)
     }
 

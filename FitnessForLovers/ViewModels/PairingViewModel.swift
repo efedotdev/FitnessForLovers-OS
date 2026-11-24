@@ -14,6 +14,7 @@ class PairingViewModel: ObservableObject {
 
     @Published var pairings: [PairingResponse] = []
     @Published var pendingInvitations: [PairingResponse] = []
+    @Published var sentInvitations: [PairingResponse] = []
     @Published var activePairings: [PairingResponse] = []
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
@@ -43,10 +44,15 @@ class PairingViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            let response = try await apiService.getPairings()
-            self.pairings = response.pairings
-            self.pendingInvitations = response.pairings.filter { $0.status == .pending }
-            self.activePairings = response.pairings.filter { $0.isActive }
+            async let allResponse = apiService.getPairings()
+            async let pendingResponse = apiService.getPendingPairings()
+            async let sentResponse = apiService.getSentPairings()
+
+            let (all, pending, sent) = try await (allResponse, pendingResponse, sentResponse)
+            self.pairings = all.pairings
+            self.pendingInvitations = pending.pairings.filter { !$0.isInviter }
+            self.sentInvitations = sent.pairings
+            self.activePairings = all.pairings.filter { $0.isActive }
         } catch {
             self.errorMessage = error.localizedDescription
         }
@@ -73,7 +79,7 @@ class PairingViewModel: ObservableObject {
         do {
             let response = try await apiService.createPairing(request)
             pairings.append(response.pairing)
-            pendingInvitations.append(response.pairing)
+            sentInvitations.append(response.pairing)
             showInviteSheet = false
             inviteEmail = ""
             selectedSharingScope = .activityOnly
@@ -141,9 +147,10 @@ class PairingViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            try await apiService.deletePairing(id: pairing.id)
+            _ = try await apiService.deletePairing(id: pairing.id)
             pairings.removeAll { $0.id == pairing.id }
             pendingInvitations.removeAll { $0.id == pairing.id }
+            sentInvitations.removeAll { $0.id == pairing.id }
             activePairings.removeAll { $0.id == pairing.id }
             NotificationCenter.default.post(name: .pairingChanged, object: nil)
             return true
@@ -156,16 +163,12 @@ class PairingViewModel: ObservableObject {
     private func updatePairingInLists(_ updated: PairingResponse) {
         if let index = pairings.firstIndex(where: { $0.id == updated.id }) {
             pairings[index] = updated
-        }
-        if let index = pendingInvitations.firstIndex(where: { $0.id == updated.id }) {
-            pendingInvitations[index] = updated
-        }
-        if let index = activePairings.firstIndex(where: { $0.id == updated.id }) {
-            activePairings[index] = updated
+        } else {
+            pairings.append(updated)
         }
 
-        // Re-categorize
-        pendingInvitations = pairings.filter { $0.status == .pending }
+        pendingInvitations = pairings.filter { $0.status == .pending && !$0.isInviter }
+        sentInvitations = pairings.filter { $0.status == .pending && $0.isInviter }
         activePairings = pairings.filter { $0.isActive }
     }
 

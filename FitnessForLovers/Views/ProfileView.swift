@@ -80,10 +80,10 @@ struct ProfileView: View {
 
                 // HealthKit Status
                 Section {
-                    let isAuthorized = healthKitService.isAuthorized
-                    let iconName = isAuthorized ? "heart.fill" : "heart.slash"
-                    let iconColor = isAuthorized ? Color.green : Color.gray
-                    let statusText = isAuthorized ? "Connected" : "Not Connected"
+                    let hasRequestedAuthorization = healthKitService.hasRequestedAuthorization
+                    let iconName = hasRequestedAuthorization ? "heart.fill" : "heart.slash"
+                    let iconColor = hasRequestedAuthorization ? Color.blue : Color.gray
+                    let statusText = hasRequestedAuthorization ? "Access requested" : "Not requested"
 
                     HStack(spacing: 12) {
                         Image(systemName: iconName)
@@ -102,8 +102,8 @@ struct ProfileView: View {
 
                         Spacer()
 
-                        if !healthKitService.isAuthorized {
-                            Button("Connect") {
+                        if !hasRequestedAuthorization {
+                            Button("Request access") {
                                 Task {
                                     _ = await healthKitService.requestAuthorization()
                                 }
@@ -441,6 +441,7 @@ struct EditProfileView: View {
 
     @State private var name: String = ""
     @State private var isLoading = false
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -453,9 +454,13 @@ struct EditProfileView: View {
                     Button("Save Changes") {
                         Task {
                             isLoading = true
-                            try? await authManager.updateProfile(name: name.isEmpty ? nil : name, avatarUrl: nil)
-                            dismiss()
-                            isLoading = false
+                            defer { isLoading = false }
+                            do {
+                                _ = try await authManager.updateProfile(name: name.isEmpty ? nil : name, avatarUrl: nil)
+                                dismiss()
+                            } catch {
+                                errorMessage = "Profile could not be updated. Please try again."
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -465,6 +470,14 @@ struct EditProfileView: View {
             }
             .navigationTitle("Edit Profile")
             .navigationBarTitleDisplayMode(.inline)
+            .alert("Profile error", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("OK") { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "")
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

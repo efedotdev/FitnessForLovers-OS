@@ -13,17 +13,54 @@ struct APIResponse<T: Codable>: Codable {
     let success: Bool
     let data: T?
     let error: APIError?
-    let statusCode: Int
+    let statusCode: Int?
 }
 
 struct APIError: Codable {
-    let error: String
-    let message: String
-    let statusCode: Int
+    let error: String?
+    let message: String?
+    let statusCode: Int?
     let details: [String: String]?
 }
 
+extension JSONDecoder {
+    static func backendAPIDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: value) {
+                return date
+            }
+
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) {
+                return date
+            }
+
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected an ISO-8601 date string."
+            )
+        }
+        return decoder
+    }
+}
+
 // MARK: - Authentication Models
+
+struct RegisterRequest: Codable {
+    let name: String
+    let email: String
+    let password: String
+}
+
+struct LoginRequest: Codable {
+    let email: String
+    let password: String
+}
 
 struct AppleSignInRequest: Codable {
     let identityToken: String
@@ -31,19 +68,6 @@ struct AppleSignInRequest: Codable {
     let fullName: PersonNameComponents?
     let email: String?
 }
-
-// Development Login Request (DEBUG only)
-#if DEBUG
-struct DevLoginRequest: Codable {
-    let testEmail: String
-    let name: String
-
-    init(testEmail: String = "dev@fitnessforlovers.test", name: String = "Development User") {
-        self.testEmail = testEmail
-        self.name = name
-    }
-}
-#endif
 
 struct PersonNameComponents: Codable {
     let givenName: String?
@@ -60,10 +84,10 @@ struct UserResponse: Codable {
     let email: String
     let name: String?
     let avatarUrl: String?
-    let appleUserId: String?
-    let role: String
-    let emailVerified: Bool
     let createdAt: Date
+    let appleUserId: String?
+    let role: String?
+    let emailVerified: Bool?
     let lastLoginAt: Date?
     let preferences: UserPreferencesResponse?
 
@@ -75,7 +99,7 @@ struct UserResponse: Codable {
 struct AuthResponse: Codable {
     let user: UserResponse
     let tokens: TokensResponse
-    let isNewUser: Bool
+    let isNewUser: Bool?
 }
 
 struct RefreshResponse: Codable {
@@ -310,7 +334,7 @@ enum HealthDataType: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    var unit: HealthDataUnit {
+    var unit: HealthDataUnit? {
         switch self {
         case .steps, .flightsClimbed, .exerciseMinutes, .standHours, .workout:
             return .count
@@ -319,7 +343,7 @@ enum HealthDataType: String, Codable, CaseIterable, Identifiable {
         case .activeEnergy, .basalEnergy:
             return .kcal
         case .distanceWalkingRunning:
-            return .km
+            return .meters
         case .sleepAnalysis:
             return .hours
         case .bodyMass:
@@ -327,7 +351,7 @@ enum HealthDataType: String, Codable, CaseIterable, Identifiable {
         case .bodyFatPercentage:
             return .percentage
         case .heartRateVariability:
-            return .milliseconds
+            return nil
         case .vo2Max:
             return .mlMin
         case .bloodPressureSystolic, .bloodPressureDiastolic:
@@ -341,9 +365,9 @@ enum HealthDataType: String, Codable, CaseIterable, Identifiable {
         case .bodyTemperature:
             return .celsius
         case .menstrualFlow:
-            return .custom
+            return .count
         case .custom:
-            return .custom
+            return .count
         }
     }
 
@@ -415,8 +439,6 @@ enum HealthDataUnit: String, Codable, CaseIterable {
     case mlMin = "ML_MIN"
     case celsius = "CELSIUS"
     case seconds = "SECONDS"
-    case milliseconds = "MILLISECONDS"
-    case custom = "CUSTOM"
 
     var displayName: String {
         switch self {
@@ -434,8 +456,6 @@ enum HealthDataUnit: String, Codable, CaseIterable {
         case .mlMin: return "ml/min"
         case .celsius: return "°C"
         case .seconds: return "s"
-        case .milliseconds: return "ms"
-        case .custom: return "custom"
         }
     }
 }
@@ -508,7 +528,7 @@ struct HealthDataListResponse: Codable {
 }
 
 struct BulkSyncResponse: Codable {
-    let synced: Int
+    let synced: Int?
 }
 
 struct DailySummary: Codable {
@@ -526,10 +546,22 @@ struct SummaryResponse: Codable {
 
 struct PartnerSummaryMetric: Codable {
     let type: HealthDataType
-    let sum: Double?
-    let avg: Double?
-    let max: Double?
-    let min: Double?
+    let sum: PartnerSummaryAggregate?
+    let avg: PartnerSummaryAggregate?
+    let max: PartnerSummaryAggregate?
+    let min: PartnerSummaryAggregate?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case sum = "_sum"
+        case avg = "_avg"
+        case max = "_max"
+        case min = "_min"
+    }
+}
+
+struct PartnerSummaryAggregate: Codable {
+    let value: Double?
 }
 
 struct PartnerSummaryResponse: Codable {
@@ -543,7 +575,7 @@ struct PartnerSummary: Codable {
 }
 
 struct QueryHealthDataRequest: Codable {
-    let page: Int?
+    let offset: Int?
     let limit: Int?
     let type: HealthDataType?
     let startDate: Date?
@@ -552,7 +584,6 @@ struct QueryHealthDataRequest: Codable {
 }
 
 struct PartnerHealthDataQuery: Codable {
-    let partnerId: String
     let type: HealthDataType?
     let startDate: Date?
     let endDate: Date?
@@ -562,268 +593,113 @@ struct PartnerHealthDataQuery: Codable {
 
 // MARK: - Goal Models
 
-enum GoalType: String, Codable, CaseIterable, Identifiable {
-    case steps = "STEPS"
-    case activeEnergy = "ACTIVE_ENERGY"
-    case exerciseMinutes = "EXERCISE_MINUTES"
-    case standHours = "STAND_HOURS"
-    case distanceWalkingRunning = "DISTANCE_WALKING_RUNNING"
-    case flightsClimbed = "FLIGHTS_CLIMBED"
-    case workouts = "WORKOUTS"
-    case sleepHours = "SLEEP_HOURS"
-    case heartRateVariability = "HEART_RATE_VARIABILITY"
-    case custom = "CUSTOM"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .steps: return "Steps"
-        case .activeEnergy: return "Active Calories"
-        case .exerciseMinutes: return "Exercise Minutes"
-        case .standHours: return "Stand Hours"
-        case .distanceWalkingRunning: return "Distance"
-        case .flightsClimbed: return "Flights Climbed"
-        case .workouts: return "Workouts"
-        case .sleepHours: return "Sleep Hours"
-        case .heartRateVariability: return "HRV"
-        case .custom: return "Custom"
-        }
-    }
-
-    var healthDataType: HealthDataType {
-        switch self {
-        case .steps: return .steps
-        case .activeEnergy: return .activeEnergy
-        case .exerciseMinutes: return .exerciseMinutes
-        case .standHours: return .standHours
-        case .distanceWalkingRunning: return .distanceWalkingRunning
-        case .flightsClimbed: return .flightsClimbed
-        case .workouts: return .workout
-        case .sleepHours: return .sleepAnalysis
-        case .heartRateVariability: return .heartRateVariability
-        case .custom: return .custom
-        }
-    }
-
-    var systemImageName: String {
-        return healthDataType.systemImageName
-    }
-
-    var defaultUnit: HealthDataUnit {
-        return healthDataType.unit
-    }
-}
-
-enum GoalPeriod: String, Codable, CaseIterable {
-    case daily = "DAILY"
-    case weekly = "WEEKLY"
-    case monthly = "MONTHLY"
-
-    var displayName: String {
-        switch self {
-        case .daily: return "Daily"
-        case .weekly: return "Weekly"
-        case .monthly: return "Monthly"
-        }
-    }
-}
-
-enum GoalStatus: String, Codable, CaseIterable {
-    case active = "ACTIVE"
-    case completed = "COMPLETED"
-    case archived = "ARCHIVED"
-    case expired = "EXPIRED"
-
-    var displayName: String {
-        switch self {
-        case .active: return "Active"
-        case .completed: return "Completed"
-        case .archived: return "Archived"
-        case .expired: return "Expired"
-        }
-    }
-
-    var color: String {
-        switch self {
-        case .active: return "green"
-        case .completed: return "blue"
-        case .archived: return "gray"
-        case .expired: return "red"
-        }
-    }
-}
-
 struct GoalResponse: Codable, Identifiable {
     let id: String
     let pairingId: String
     let createdById: String
-    let type: GoalType
-    let customType: String?
+    let title: String
     let targetValue: Double
-    let currentValue: Double
-    let period: GoalPeriod
-    let status: GoalStatus
     let startDate: Date
     let endDate: Date
     let createdAt: Date
     let updatedAt: Date
-    let createdBy: PairingUser?
-    let pairing: PairingInfo?
-    let progress: Double?
-
-    var progressPercentage: Double {
-        guard targetValue > 0 else { return 0 }
-        return min(currentValue / targetValue * 100, 100)
-    }
-
-    var isCompleted: Bool {
-        return status == .completed || progressPercentage >= 100
-    }
+    let currentValue: Double
+    let remainingValue: Double
+    let progressPercentage: Double
+    let completed: Bool
 
     var daysRemaining: Int {
         let calendar = Calendar.current
-        let startOfToday = calendar.startOfDay(for: Date())
-        let startOfEndDate = calendar.startOfDay(for: endDate)
-        let components = calendar.dateComponents([.day], from: startOfToday, to: startOfEndDate)
-        return max(components.day ?? 0, 0)
+        let today = calendar.startOfDay(for: Date())
+        let end = calendar.startOfDay(for: endDate)
+        return max(calendar.dateComponents([.day], from: today, to: end).day ?? 0, 0)
     }
-}
 
-struct PairingInfo: Codable {
-    let id: String
-    let user1Id: String
-    let user2Id: String
+    func applying(progress: GoalProgress) -> GoalResponse {
+        GoalResponse(
+            id: id,
+            pairingId: pairingId,
+            createdById: createdById,
+            title: title,
+            targetValue: targetValue,
+            startDate: startDate,
+            endDate: endDate,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            currentValue: progress.currentValue,
+            remainingValue: progress.remainingValue,
+            progressPercentage: progress.progressPercentage,
+            completed: progress.completed
+        )
+    }
 }
 
 struct CreateGoalRequest: Codable {
     let pairingId: String
-    let type: GoalType
-    let customType: String?
+    let title: String
     let targetValue: Double
-    let period: GoalPeriod
     let startDate: Date
     let endDate: Date
 }
 
 struct UpdateGoalRequest: Codable {
+    let title: String?
     let targetValue: Double?
-    let currentValue: Double?
-    let status: GoalStatus?
+    let startDate: Date?
     let endDate: Date?
-}
-
-struct QueryGoalsRequest: Codable {
-    let page: Int?
-    let limit: Int?
-    let pairingId: String?
-    let status: GoalStatus?
-    let type: GoalType?
-    let period: GoalPeriod?
 }
 
 struct GoalListResponse: Codable {
     let goals: [GoalResponse]
-    let pagination: PaginationResponse
+    let pagination: PaginationResponse?
+}
+
+struct GoalProgress: Codable {
+    let currentValue: Double
+    let remainingValue: Double
+    let progressPercentage: Double
+    let completed: Bool
 }
 
 struct GoalProgressResponse: Codable {
-    let goal: GoalResponse
-    let partnerProgress: PartnerGoalProgress?
-}
-
-struct PartnerGoalProgress: Codable {
-    let userId: String
-    let name: String?
-    let avatarUrl: String?
-    let currentValue: Double
-    let progress: Double
+    let progress: GoalProgress
 }
 
 // MARK: - Dashboard Models
 
-struct DashboardUserSummary: Codable {
+struct DashboardSummary: Codable {
+    let date: String
     let steps: Int
     let activeEnergy: Double
-    let exerciseMinutes: Int
-    let standHours: Int
     let distance: Double
-    let flightsClimbed: Int
-    let workouts: Int
-    let sleepHours: Double
-    let heartRate: HeartRateSummary?
-    let bodyMetrics: BodyMetricsSummary?
 }
 
-struct HeartRateSummary: Codable {
-    let current: Int?
-    let resting: Int?
-    let variability: Double?
-}
-
-struct BodyMetricsSummary: Codable {
-    let weight: Double?
-    let bodyFatPercentage: Double?
+struct DashboardPartnerMetrics: Codable {
+    let date: String
+    let sharingScope: String
+    let steps: Int?
+    let activeEnergy: Double?
+    let distance: Double?
 }
 
 struct DashboardPartnerSummary: Codable {
-    let userId: String
+    let id: String
     let name: String?
     let avatarUrl: String?
     let sharingScope: String
-    let summary: DashboardUserSummary
+    let summary: DashboardPartnerMetrics
 }
 
-struct DashboardGoal: Codable, Identifiable {
-    let id: String
-    let type: String
-    let targetValue: Double
-    let currentValue: Double
-    let progress: Double
-    let period: String
-    let status: String
-    let endDate: String
-
-    var daysRemaining: Int {
-        let formatter = ISO8601DateFormatter()
-        guard let endDateObj = formatter.date(from: endDate) else { return 0 }
-        let calendar = Calendar.current
-        let startOfToday = calendar.startOfDay(for: Date())
-        let startOfEndDate = calendar.startOfDay(for: endDateObj)
-        let components = calendar.dateComponents([.day], from: startOfToday, to: startOfEndDate)
-        return max(components.day ?? 0, 0)
-    }
-}
-
-struct RecentActivityItem: Codable, Identifiable {
-    let id: String
-    let type: String
-    let value: Double
-    let unit: String
-    let startDate: String
-    let sourceName: String?
-}
-
-struct Insight: Codable, Identifiable {
-    let id = UUID()
-    let type: String
-    let message: String
-    let priority: InsightPriority
-}
-
-enum InsightPriority: String, Codable {
-    case info = "info"
-    case warning = "warning"
-    case success = "success"
+struct DashboardSync: Codable {
+    let lastSyncedAt: Date?
+    let status: String?
 }
 
 struct DashboardResponse: Codable {
-    let date: String
-    let user: DashboardUserSummary
+    let summary: DashboardSummary
     let partner: DashboardPartnerSummary?
-    let activeGoals: [DashboardGoal]
-    let recentActivity: [RecentActivityItem]
-    let insights: [Insight]
+    let goals: [GoalResponse]
+    let sync: DashboardSync
 }
 
 // MARK: - Device Models

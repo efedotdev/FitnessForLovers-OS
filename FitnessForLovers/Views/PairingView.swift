@@ -10,6 +10,7 @@ import SwiftUI
 struct PairingView: View {
     @EnvironmentObject var pairingViewModel: PairingViewModel
     @EnvironmentObject var authManager: AuthManager
+    @EnvironmentObject var dashboardViewModel: DashboardViewModel
 
     @State private var showInviteSheet = false
     @State private var selectedPairing: PairingResponse?
@@ -33,22 +34,37 @@ struct PairingView: View {
                     }
                 }
 
-                // Pending Invitations
+                if let partner = dashboardViewModel.partnerSummary {
+                    Section("Partner Fitness Summary") {
+                        HStack {
+                            summaryMetric("Steps", value: partner.summary.steps?.formatted() ?? "-")
+                            summaryMetric(
+                                "Active energy",
+                                value: partner.summary.activeEnergy.map { "\(Int($0)) kcal" } ?? "-"
+                            )
+                            summaryMetric(
+                                "Distance",
+                                value: partner.summary.distance.map { String(format: "%.1f km", $0 / 1000) } ?? "-"
+                            )
+                        }
+                    }
+                }
+
+                // Incoming Invitations
                 if !pairingViewModel.pendingInvitations.isEmpty {
                     Section {
                         ForEach(pairingViewModel.pendingInvitations) { invitation in
                             PendingInvitationCard(invitation: invitation)
                         }
                     } header: {
-                        HStack {
-                            Text("Pending Invitations")
-                            Spacer()
-                            Text("\(pairingViewModel.pendingInvitations.count)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(.orange.opacity(0.2), in: Capsule())
+                        Text("Invitations received")
+                    }
+                }
+
+                if !pairingViewModel.sentInvitations.isEmpty {
+                    Section("Invitations sent") {
+                        ForEach(pairingViewModel.sentInvitations) { invitation in
+                            PendingInvitationCard(invitation: invitation)
                         }
                     }
                 }
@@ -98,7 +114,10 @@ struct PairingView: View {
                 }
 
                 // Empty State
-                if !pairingViewModel.hasActivePairing && pairingViewModel.pendingInvitations.isEmpty && pairingViewModel.pairings.isEmpty {
+                if !pairingViewModel.hasActivePairing
+                    && pairingViewModel.pendingInvitations.isEmpty
+                    && pairingViewModel.sentInvitations.isEmpty
+                    && pairingViewModel.pairings.isEmpty {
                     ContentUnavailableView(
                         "No Partner Yet",
                         systemImage: "person.2.slash",
@@ -139,6 +158,19 @@ struct PairingView: View {
                 Text(pairingViewModel.errorMessage ?? "")
             }
         }
+    }
+
+    private func summaryMetric(_ title: String, value: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.subheadline.bold())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -440,8 +472,13 @@ struct InvitePartnerSheet: View {
         pairingViewModel.inviteEmail = email
         pairingViewModel.selectedSharingScope = selectedScope
         pairingViewModel.customTypes = customTypes
-        pairingViewModel.showInviteSheet = true
-        dismiss()
+        isLoading = true
+        Task {
+            if await pairingViewModel.sendInvitation() {
+                dismiss()
+            }
+            isLoading = false
+        }
     }
 }
 
@@ -589,7 +626,7 @@ struct PairingDetailView: View {
                 Button("Cancel", role: .cancel) { }
                 Button("Remove", role: .destructive) {
                     Task {
-                        await pairingViewModel.removePairing(pairing)
+                        _ = await pairingViewModel.removePairing(pairing)
                         dismiss()
                     }
                 }

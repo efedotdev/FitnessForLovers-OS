@@ -4,11 +4,12 @@ A SwiftUI app for sharing health data between two Apple devices, setting shared 
 
 ## Features
 
-- **Apple Sign In** - Secure authentication using Apple ID
-- **HealthKit Integration** - Sync health data from Apple Health
+- **Email authentication** - Register, log in, restore sessions, and log out
+- **Apple Sign In** - Existing sign-in integration remains available
+- **HealthKit Integration** - Read steps, active energy, and walking/running distance
 - **Partner Pairing** - Invite and connect with a partner
 - **Shared Goals** - Create and track fitness goals together
-- **Real-time Dashboard** - View your and your partner's health metrics
+- **Dashboard** - View your daily metrics, partner summary, and shared goals
 - **Data Sharing Control** - Granular control over what data to share
 
 ## Project Structure
@@ -44,16 +45,18 @@ FitnessForLovers/
 
 ## Backend API Integration
 
-The app communicates with a Node.js/Fastify backend running on `http://localhost:3000`.
+The app uses the backend at `http://localhost:3000` by default (including iOS Simulator).
+There is no `/api` path prefix. Change `APIConfig.baseURL` in
+`FitnessForLovers/Services/APIService.swift` for a deployed HTTPS backend.
 
 ### API Endpoints Used
 
 | Feature | Endpoints |
 |---------|-----------|
-| Auth | `POST /auth/apple`, `POST /auth/refresh`, `GET /auth/me`, `POST /auth/logout` |
-| Pairings | `GET/POST /pairings`, `POST /pairings/:id/respond`, `PATCH/DELETE /pairings/:id` |
-| Health Data | `POST /health-data/bulk`, `GET /health-data/summary`, `GET /health-data/partner/:id` |
-| Goals | `GET/POST /goals`, `GET/PATCH/DELETE /goals/:id`, `GET /goals/:id/progress` |
+| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `GET /auth/me`, `POST /auth/logout` |
+| Pairings | `GET /pairings`, `/pairings/pending`, `/pairings/sent`, `POST /pairings`, `POST /pairings/:id/respond`, `PATCH/DELETE /pairings/:id` |
+| Health Data | `POST /health-data/bulk`, `GET /health-data/summary`, `GET /health-data/partner/:id/summary` |
+| Goals | `POST /goals`, `GET /goals/pairing/:pairingId`, `GET /goals/:id`, `PATCH/DELETE /goals/:id`, `GET /goals/:id/progress` |
 | Dashboard | `GET /dashboard` |
 | User | `GET/PATCH /users/me`, `GET/PATCH /users/me/preferences` |
 | Devices | `POST /devices`, `GET/PATCH/DELETE /devices/:id` |
@@ -64,35 +67,20 @@ The app communicates with a Node.js/Fastify backend running on `http://localhost
 - iOS 17.0+
 - Xcode 15.0+
 - Swift 5.9+
-- Apple Developer Account (for HealthKit & Sign In with Apple)
+- Xcode signing team for device builds and Apple capabilities
 
 ## Setup
 
 ### 1. Configure Xcode Project
 
-1. Open `FitnessForLovers.xcodeproj` in Xcode
-2. Select the project target
-3. **Signing & Capabilities**:
-   - Add **Sign In with Apple** capability
-   - Add **HealthKit** capability
-   - Enable **Background Modes** → **Background fetch** & **Remote notifications**
-4. **Info.plist** - Add required keys:
-   ```xml
-   <key>NSHealthShareUsageDescription</key>
-   <string>We need access to your health data to sync with your partner</string>
-   <key>NSHealthUpdateUsageDescription</key>
-   <string>We write workout data to HealthKit</string>
-   ```
+1. Open `FitnessForLovers.xcodeproj` in Xcode and select the `FitnessForLovers` target.
+2. Set your development team and a unique bundle identifier under **Signing & Capabilities**.
+3. Ensure **HealthKit** is enabled for the App ID and signing profile. Keep **Sign In with Apple** enabled only if using the retained Apple sign-in option.
+4. The active `Info.plist` is at the repository root and contains the read-only `NSHealthShareUsageDescription`. No HealthKit write permission or Background Modes capability is used.
 
 ### 2. Configure Backend URL
 
-In `Services/APIService.swift`, update the base URL:
-```swift
-struct APIConfig {
-    static let baseURL = "https://your-api-domain.com" // Production
-    // static let baseURL = "http://localhost:3000" // Development
-}
-```
+The simulator uses `http://localhost:3000`. For production, set `APIConfig.baseURL` to the backend's HTTPS origin. The plist permits insecure HTTP only for the local `localhost` development host.
 
 ### 3. Run the Backend
 
@@ -107,7 +95,7 @@ npm run dev
 ### 4. Run the App
 
 1. Select your development team in Xcode
-2. Connect your iPhone (required for HealthKit)
+2. Connect an iPhone to test actual HealthKit data (HealthKit data is not available in Simulator)
 3. Press `Cmd+R` to build and run
 
 ## Architecture
@@ -129,41 +117,37 @@ Backend → APIService → ViewModels → Views
 
 ### Authentication Flow
 
-1. User taps "Sign in with Apple"
-2. `AuthManager` handles ASAuthorization
-3. Identity token sent to `/auth/apple`
-4. Backend returns JWT access/refresh tokens
-5. Tokens stored securely in Keychain
-6. Subsequent requests include Bearer token
-7. Automatic token refresh on 401
+1. User registers or logs in with email and password.
+2. JWT access/refresh tokens are saved in Keychain before the app enters the authenticated state.
+3. On relaunch, the app verifies the saved session with `GET /auth/me`.
+4. Protected requests use a Bearer access token; a 401 triggers one refresh attempt.
+5. Logout revokes the backend session and clears local Keychain tokens.
 
 ### HealthKit Sync
 
 1. User grants HealthKit permissions
-2. `HealthKitService` reads quantity/category samples
-3. Samples converted to backend DTO format
-4. Bulk synced via `/health-data/bulk`
-5. Background delivery enabled for real-time updates
+2. `HealthKitService` reads steps, active energy, and walking/running distance.
+3. Samples include their HealthKit UUID and are converted to backend DTOs (distance in meters).
+4. Authenticated batches are synced via `/health-data/bulk`.
 
 ## Key Components
 
 ### APIService (Actor)
 - Thread-safe network requests
 - Automatic token refresh
-- Request/response logging
+- Safe request/response diagnostics
 - Error handling with typed errors
 
 ### AuthManager (@ObservableObject)
 - Current user state
-- Apple Sign In flow
+- Email/password and retained Apple Sign In flows
 - Session restoration
 - Sign out handling
 
 ### HealthKitService (@ObservableObject)
 - Authorization management
 - Sample querying & conversion
-- Background delivery
-- Sync scheduling
+- Explicit user-triggered sync
 
 ### ViewModels (@ObservableObject)
 - Reactive UI state
@@ -173,17 +157,12 @@ Backend → APIService → ViewModels → Views
 
 ## Testing
 
-### Unit Tests
+### API contract tests
 ```bash
-# Run tests in Xcode
-Cmd+U
+swift test
 ```
 
-### UI Tests
-```bash
-# Run UI tests
-xcodebuild test -scheme FitnessForLoversUITests
-```
+The Xcode project currently has an app scheme but no Xcode test target.
 
 ## Deployment
 
@@ -199,11 +178,11 @@ xcodebuild test -scheme FitnessForLoversUITests
 
 ## Privacy & Security
 
-- Tokens stored in Keychain (not UserDefaults)
+- Access and refresh tokens stored in Keychain (not UserDefaults)
 - Health data only synced with explicit user consent
 - No health data stored locally unencrypted
 - Partner data access controlled by sharing scope
-- All API communication over HTTPS (production)
+- Production API communication must use HTTPS; local development uses HTTP on localhost
 
 ## Troubleshooting
 

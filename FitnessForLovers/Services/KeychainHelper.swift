@@ -15,31 +15,35 @@ enum KeychainError: Error {
     case invalidData
 }
 
-@MainActor
 struct KeychainHelper {
-    nonisolated static let service = "com.fitnessforlovers.app"
+    static let service = "com.fitnessforlovers.app"
 
-    nonisolated static func save(key: String, data: Data) {
-        // Delete any existing item first
-        delete(key: key)
-
+    static func save(key: String, data: Data) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
+            kSecAttrAccount as String: key
+        ]
+
+        let attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
 
-        let status = SecItemAdd(query as CFDictionary, nil)
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
 
         guard status == errSecSuccess else {
-            print("Keychain save error for \(key): \(status)")
-            return
+            throw KeychainError.unknown(status)
         }
     }
 
-    nonisolated static func load(key: String) -> Data? {
+    static func load(key: String) throws -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -50,24 +54,29 @@ struct KeychainHelper {
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        guard status == errSecSuccess else {
-            if status != errSecItemNotFound {
-                print("Keychain load error for \(key): \(status)")
-            }
+        if status == errSecItemNotFound {
             return nil
         }
+        guard status == errSecSuccess else {
+            throw KeychainError.unknown(status)
+        }
 
-        return result as? Data
+        guard let data = result as? Data else {
+            throw KeychainError.invalidData
+        }
+        return data
     }
 
-    nonisolated static func delete(key: String) {
+    static func delete(key: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
 
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.unknown(status)
+        }
     }
 }

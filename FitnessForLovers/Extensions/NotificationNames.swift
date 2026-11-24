@@ -13,4 +13,5 @@ extension Notification.Name {
     static let goalsChanged = Notification.Name("goalsChanged")
     static let userProfileChanged = Notification.Name("userProfileChanged")
     static let authStateChanged = Notification.Name("authStateChanged")
+    static let sessionExpired = Notification.Name("sessionExpired")
 }
