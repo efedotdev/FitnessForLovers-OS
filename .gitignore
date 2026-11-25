@@ -1,0 +1,73 @@
+# Xcode
+build/
+DerivedData/
+**/DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+*.xcscheme
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+
+# CocoaPods
+Pods/
+*.xcworkspace
+
+# Carthage
+Carthage/Build/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output/
+
+# macOS
+.DS_Store
+**/.DS_Store
+*.swp
+*.lock
+profile
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Signing credentials and provisioning profiles
+*.p8
+*.p12
+*.pem
+*.key
+*.mobileprovision
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test
+*.xctestrun
+Coverage.profdata
+
+# Archives
+*.xcarchive
+*.ipa
+*.dSYM.zip
+
+# Localization
+*.xliff
