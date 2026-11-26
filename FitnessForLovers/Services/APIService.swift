@@ -396,16 +396,6 @@ extension APIService {
         return try await request(endpoint, responseType: AuthResponse.self)
     }
 
-    func devResetPassword(_ resetRequest: DevResetPasswordRequest) async throws {
-        let endpoint = Endpoint(
-            path: "/auth/dev-reset-password",
-            method: .post,
-            body: resetRequest,
-            requiresAuth: false
-        )
-        try await requestVoid(endpoint)
-    }
-
     func appleSignIn(_ signInRequest: AppleSignInRequest) async throws -> AuthResponse {
         let endpoint = Endpoint(
             path: "/auth/apple",
