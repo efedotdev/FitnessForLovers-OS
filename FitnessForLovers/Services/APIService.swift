@@ -10,7 +10,7 @@ import Foundation
 // MARK: - API Configuration
 
 struct APIConfig {
-    nonisolated static let baseURL = "http://localhost:3000" // Change for production
+    nonisolated static let baseURL = "http://192.168.1.155:3000" // Change for production
     nonisolated static let timeout: TimeInterval = 30
 }
 
