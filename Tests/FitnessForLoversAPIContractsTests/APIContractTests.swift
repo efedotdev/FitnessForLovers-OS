@@ -178,4 +178,22 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "ios")
         XCTAssertFalse(url.path.hasPrefix("/api/"))
     }
+
+    func testDevResetPasswordRequestUsesBackendFieldNames() throws {
+        let request = DevResetPasswordRequest(
+            email: "user@example.com",
+            newPassword: "new-password",
+            newPasswordConfirmation: "new-password"
+        )
+        let data = try JSONEncoder().encode(request)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+
+        XCTAssertEqual(
+            Set(json.keys),
+            Set(["email", "newPassword", "newPasswordConfirmation"])
+        )
+        XCTAssertEqual(json["email"], "user@example.com")
+        XCTAssertEqual(json["newPassword"], "new-password")
+        XCTAssertEqual(json["newPasswordConfirmation"], "new-password")
+    }
 }
