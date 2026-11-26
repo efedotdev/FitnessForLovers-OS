@@ -62,12 +62,6 @@ struct LoginRequest: Codable {
     let password: String
 }
 
-struct DevResetPasswordRequest: Codable {
-    let email: String
-    let newPassword: String
-    let newPasswordConfirmation: String
-}
-
 struct AppleSignInRequest: Codable {
     let identityToken: String
     let authorizationCode: String?

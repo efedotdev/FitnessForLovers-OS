@@ -125,7 +125,6 @@ struct OnboardingView: View {
     @State private var email = ""
     @State private var password = ""
     @State private var passwordConfirmation = ""
-    @State private var passwordResetMessage: String?
 
     private var normalizedEmail: String {
         email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -191,16 +190,8 @@ struct OnboardingView: View {
                             .multilineTextAlignment(.center)
                     }
 
-                    if let passwordResetMessage {
-                        Text(passwordResetMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.green)
-                            .multilineTextAlignment(.center)
-                    }
-
                     Button {
                         Task {
-                            passwordResetMessage = nil
                             if isRegistering {
                                 await authManager.register(
                                     name: name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -226,19 +217,6 @@ struct OnboardingView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(authManager.isLoading || !canSubmit)
 
-                    if !isRegistering {
-                        NavigationLink {
-                            ForgotPasswordView(email: $email) {
-                                password = ""
-                                passwordConfirmation = ""
-                                passwordResetMessage = "Your password was reset. Sign in with your new password."
-                            }
-                        } label: {
-                            Text("Forgot password?")
-                        }
-                        .disabled(authManager.isLoading)
-                    }
-
                     if isRegistering && password != passwordConfirmation && !passwordConfirmation.isEmpty {
                         Text("Passwords do not match.")
                             .font(.footnote)
@@ -260,137 +238,6 @@ struct OnboardingView: View {
                 .padding(.bottom, 32)
             }
             .scrollDismissesKeyboard(.interactively)
-        }
-    }
-}
-
-struct ForgotPasswordView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var email: String
-    let onSuccess: () -> Void
-
-    @State private var newPassword = ""
-    @State private var newPasswordConfirmation = ""
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-
-    private let apiService = APIService.shared
-
-    private var normalizedEmail: String {
-        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private var isValidEmail: Bool {
-        let parts = normalizedEmail.split(separator: "@", omittingEmptySubsequences: false)
-        return parts.count == 2
-            && !parts[0].isEmpty
-            && parts[1].contains(".")
-            && !normalizedEmail.contains(where: \.isWhitespace)
-    }
-
-    private var canSubmit: Bool {
-        isValidEmail
-            && newPassword.count >= 8
-            && newPassword == newPasswordConfirmation
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                TextField("Email", text: $email)
-                    .textContentType(.emailAddress)
-                    .keyboardType(.emailAddress)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-
-                SecureField("New password", text: $newPassword)
-                    .textContentType(.newPassword)
-
-                SecureField("Confirm new password", text: $newPasswordConfirmation)
-                    .textContentType(.newPassword)
-            } footer: {
-                VStack(alignment: .leading, spacing: 6) {
-                    if !normalizedEmail.isEmpty && !isValidEmail {
-                        Text("Enter a valid email address.")
-                    }
-                    if !newPassword.isEmpty && newPassword.count < 8 {
-                        Text("Password must be at least 8 characters.")
-                    }
-                    if !newPasswordConfirmation.isEmpty && newPassword != newPasswordConfirmation {
-                        Text("Passwords do not match.")
-                    }
-                }
-                .foregroundStyle(.red)
-            }
-
-            if let errorMessage {
-                Section {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                        .font(.footnote)
-                }
-            }
-
-            Section {
-                Button {
-                    Task {
-                        await resetPassword()
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        if isLoading {
-                            ProgressView()
-                        } else {
-                            Text("Reset password")
-                                .fontWeight(.semibold)
-                        }
-                        Spacer()
-                    }
-                }
-                .disabled(isLoading || !canSubmit)
-            }
-        }
-        .navigationTitle("Forgot password")
-        .navigationBarTitleDisplayMode(.inline)
-        .scrollDismissesKeyboard(.interactively)
-    }
-
-    @MainActor
-    private func resetPassword() async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            try await apiService.devResetPassword(
-                DevResetPasswordRequest(
-                    email: normalizedEmail,
-                    newPassword: newPassword,
-                    newPasswordConfirmation: newPasswordConfirmation
-                )
-            )
-            newPassword = ""
-            newPasswordConfirmation = ""
-            onSuccess()
-            dismiss()
-        } catch {
-            errorMessage = resetErrorMessage(for: error)
-        }
-    }
-
-    private func resetErrorMessage(for error: Error) -> String {
-        guard let apiError = error as? APIServiceError else {
-            return "Password could not be reset. Please try again."
-        }
-
-        switch apiError {
-        case .noInternetConnection, .requestTimeout:
-            return "Unable to connect. Check your connection and try again."
-        case .notFound:
-            return "Password reset is unavailable for this account. Check the email and try again."
-        default:
-            return "Password could not be reset. Check your details and try again."
         }
     }
 }
